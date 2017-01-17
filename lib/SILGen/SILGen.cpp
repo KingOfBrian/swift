@@ -1466,6 +1466,8 @@ SILModule::constructSIL(ModuleDecl *mod, SILOptions &options, FileUnit *SF,
     if (hasSIB)
       M->getSILLoader()->getAllForModule(mod->getName(), nullptr);
   }
+  
+  SGM.emitVTables();
 
   // Emit external definitions used by this module.
   for (size_t i = 0, e = mod->getASTContext().LastCheckedExternalDefinition;

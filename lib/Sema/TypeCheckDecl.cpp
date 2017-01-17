@@ -6046,14 +6046,14 @@ public:
     
     // Non-Objective-C declarations in extensions cannot override or
     // be overridden.
-    if ((base->getDeclContext()->isExtensionContext() ||
-         override->getDeclContext()->isExtensionContext()) &&
-        !base->isObjC() && !isKnownObjC) {
-      TC.diagnose(override, diag::override_decl_extension,
-                  !override->getDeclContext()->isExtensionContext());
-      TC.diagnose(base, diag::overridden_here);
-      return true;
-    }
+//    if ((base->getDeclContext()->isExtensionContext() ||
+//         override->getDeclContext()->isExtensionContext()) &&
+//        !base->isObjC() && !isKnownObjC) {
+//      TC.diagnose(override, diag::override_decl_extension,
+//                  !override->getDeclContext()->isExtensionContext());
+//      TC.diagnose(base, diag::overridden_here);
+//      return true;
+//    }
     
     // If the overriding declaration does not have the 'override' modifier on
     // it, complain.
@@ -6067,11 +6067,30 @@ public:
             .fixItInsert(override->getStartLoc(), "override ");
       else
         TC.diagnose(override, diag::missing_override);
+
       TC.diagnose(base, diag::overridden_here);
       override->getAttrs().add(
           new (TC.Context) OverrideAttr(SourceLoc()));
     }
 
+    // If the overridden method is declared in a Swift Class Declaration,
+    // dispatch will use table dispatch. If the override is in an extension
+    // warn, since it is not added to the class vtable.
+    //
+    // FIXME: Only warn if the extension is in another module, and if
+    // it is in the same module, update the vtable.
+//    if (auto *baseDecl = dyn_cast<ClassDecl>(base->getDeclContext())) {
+//      if (baseDecl->hasKnownSwiftImplementation() && 
+//          !base->isDynamic() &&
+//          override->getDeclContext()->isExtensionContext()) {
+//        // For compatibility, only generate a warning in Swift 3
+//        TC.diagnose(override, (TC.Context.isSwiftVersion3()
+//          ? diag::override_class_declaration_in_extension_warning
+//          : diag::override_class_declaration_in_extension));
+//        TC.diagnose(base, diag::overridden_here);
+//      }
+//    }
+    
     // If the overriding declaration is 'throws' but the base is not,
     // complain.
     if (auto overrideFn = dyn_cast<AbstractFunctionDecl>(override)) {

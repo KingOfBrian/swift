@@ -9,11 +9,6 @@ import gizmo
 
 // Test for compilation order independence
 class C : B {
-  // foo inherited from B
-  override func bar() {}
-  // bas inherited from A
-  override func qux() {}
-
   // zim inherited from B
   override func zang() {}
 
@@ -21,6 +16,13 @@ class C : B {
 
   func flopsy() {}
   func mopsy() {}
+}
+
+extension C {
+  // foo inherited from B
+  override func bar() {}
+  // bas inherited from A
+  override func qux() {}
 }
 // CHECK: sil_vtable C {
 // CHECK:   #A.foo!1: _TFC7vtables1B3foo

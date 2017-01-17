@@ -151,20 +151,27 @@ class SILGenVTable : public Lowering::ASTVisitor<SILGenVTable> {
 public:
   SILGenModule &SGM;
   ClassDecl *theClass;
-  std::vector<SILVTable::Entry> vtableEntries;
+  
+  std::vector<SILVTable::Entry> &getVTableEntries() {
+    auto *entries = SGM.VTableEntryMap.lookup(theClass);
+    if (!entries) {
+      entries = new std::vector<SILVTable::Entry>();
+      SGM.VTableEntryMap.insert({theClass, entries});
+    }
+    return *entries;
+  }
 
   SILGenVTable(SILGenModule &SGM, ClassDecl *theClass)
-    : SGM(SGM), theClass(theClass)
-  {
+    : SGM(SGM), theClass(theClass) {}
+
+  void visitAncestors() {
     // Populate the superclass members, if any.
     Type super = theClass->getSuperclass();
     if (super && super->getClassOrBoundGenericClass())
       visitAncestor(super->getClassOrBoundGenericClass());
-  }
-
-  ~SILGenVTable() {
-    // Create the vtable.
-    SILVTable::create(SGM.M, theClass, vtableEntries);
+      
+    // Store an iterable class
+    SGM.VTablesPending.insert(theClass);
   }
 
   void visitAncestor(ClassDecl *ancestor) {
@@ -204,7 +211,7 @@ public:
     // NB: Mutates vtableEntries in-place
     // FIXME: O(n^2)
     if (auto overridden = member.getNextOverriddenVTableEntry()) {
-      for (SILVTable::Entry &entry : vtableEntries) {
+      for (SILVTable::Entry &entry : getVTableEntries()) {
         SILDeclRef ref = overridden;
 
         do {
@@ -230,7 +237,7 @@ public:
       return;
 
     // Otherwise, introduce a new vtable entry.
-    vtableEntries.push_back(getVtableEntry(member));
+    getVTableEntries().push_back(getVtableEntry(member));
   }
 
   // Default for members that don't require vtable entries.
@@ -325,8 +332,10 @@ public:
   /// Emit SIL functions for all the members of the type.
   void emitType() {
     // Start building a vtable if this is a class.
-    if (auto theClass = dyn_cast<ClassDecl>(theType))
+    if (auto theClass = dyn_cast<ClassDecl>(theType)) {
       genVTable.emplace(SGM, theClass);
+      genVTable->visitAncestors();
+    }
 
     for (Decl *member : theType->getMembers()) {
       if (genVTable)
@@ -430,14 +439,24 @@ void SILGenModule::visitNominalTypeDecl(NominalTypeDecl *ntd) {
 class SILGenExtension : public TypeMemberVisitor<SILGenExtension> {
 public:
   SILGenModule &SGM;
+  Optional<SILGenVTable> genVTable;
 
   SILGenExtension(SILGenModule &SGM)
     : SGM(SGM) {}
 
   /// Emit SIL functions for all the members of the extension.
   void emitExtension(ExtensionDecl *e) {
-    for (Decl *member : e->getMembers())
+    
+    if (auto theClass = e->getAsClassOrClassExtensionContext())
+      genVTable.emplace(SGM, theClass);
+
+    for (Decl *member : e->getMembers()) {
+      if (genVTable) {
+        genVTable->visit(member);
+      }
+    
       visit(member);
+    }
 
     if (!e->getExtendedType()->isExistentialType()) {
       // Emit witness tables for protocol conformances introduced by the

@@ -63,6 +63,12 @@ public:
   llvm::DenseMap<SILDeclRef, SILFunction*> emittedFunctions;
   /// Mapping from ProtocolConformances to emitted SILWitnessTables.
   llvm::DenseMap<ProtocolConformance*, SILWitnessTable*> emittedWitnessTables;
+  
+  /// VTable entry storage that is built as the module is generated
+  llvm::DenseMap<ClassDecl *, std::vector<SILVTable::Entry> *> VTableEntryMap;
+  
+  /// Set of classes for which vtables need to be emitted.
+  llvm::DenseSet<ClassDecl *> VTablesPending;
 
   struct DelayedFunction {
     /// Insert the entity after the given function when it's emitted.
@@ -291,6 +297,9 @@ public:
   
   /// Add a global variable to the SILModule.
   void addGlobalVariable(VarDecl *global);
+  
+  /// Emit SIL related to the processed VTables
+  void emitVTables();
   
   /// Emit SIL related to a Clang-imported declaration.
   void emitExternalDefinition(Decl *d);
