@@ -700,7 +700,7 @@ ERROR(expected_pattern,PointsToFirstBadToken,
 ERROR(keyword_cant_be_identifier,none,
       "keyword '%0' cannot be used as an identifier here", (StringRef))
 ERROR(repeated_identifier,none,
-      "found an unexpected second identifier in %0 declaration; is there an accidental break?", (StringRef))
+      "found an unexpected second identifier in declaration; is there an accidental break?", ())
 NOTE(join_identifiers,none,
      "join the identifiers together", ())
 NOTE(join_identifiers_camel_case,none,

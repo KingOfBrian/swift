@@ -2502,6 +2502,31 @@ enum class TokenProperty {
   StartsWithLess,
 };
 
+static void diagnoseDoubleIdentifier(Parser &P, Token FirstTok) {
+  P.diagnose(P.Tok.getLoc(), diag::repeated_identifier);
+
+  SourceRange DoubleIdentifierRange(FirstTok.getLoc(), P.Tok.getLoc());
+
+  // Provide two fix-its: a direct concatenation of the two identifiers
+  // and a camel-cased version.
+
+  auto DirectConcatenation = FirstTok.getText().str() + P.Tok.getText().str();
+
+  P.diagnose(P.Tok.getLoc(), diag::join_identifiers)
+    .fixItReplace(DoubleIdentifierRange, DirectConcatenation);
+
+  SmallString<8> CapitalizedScratch;
+  auto Capitalized = camel_case::toSentencecase(P.Tok.getText(),
+                                                CapitalizedScratch);
+  auto CamelCaseConcatenation = FirstTok.getText().str() + Capitalized.str();
+
+  if (DirectConcatenation != CamelCaseConcatenation)
+    P.diagnose(P.Tok.getLoc(), diag::join_identifiers_camel_case)
+      .fixItReplace(DoubleIdentifierRange, CamelCaseConcatenation);
+
+  P.consumeToken();
+}
+
 static ParserStatus parseIdentifierDeclName(Parser &P, Identifier &Result,
                                             SourceLoc &Loc, tok ResyncT1,
                                             tok ResyncT2, tok ResyncT3,
@@ -2509,12 +2534,16 @@ static ParserStatus parseIdentifierDeclName(Parser &P, Identifier &Result,
                                             TokenProperty ResyncP1,
                                             const Diagnostic &D) {
   switch (P.Tok.getKind()) {
-  case tok::identifier:
-    Result = P.Context.getIdentifier(P.Tok.getText());
-    Loc = P.Tok.getLoc();
+  case tok::identifier: {
+    Token identifierToken = P.Tok;
+    Result = P.Context.getIdentifier(identifierToken.getText());
+    Loc = identifierToken.getLoc();
     P.consumeToken();
+    if (P.Tok.isIdentifierOrUnderscore()) {
+      diagnoseDoubleIdentifier(P, identifierToken);
+    }
     return makeParserSuccess();
-
+  }
   default:
     P.checkForInputIncomplete();
     if (!D.is(diag::invalid_diagnostic)) {
@@ -4533,28 +4562,7 @@ Parser::parseDeclFunc(SourceLoc StaticLoc, StaticSpellingKind StaticSpelling,
     // identifier, it might've been a single identifier that got broken by a
     // space or newline accidentally.
     if (Tok.isIdentifierOrUnderscore() && SimpleName.str().back() != '<') {
-      diagnose(Tok.getLoc(), diag::repeated_identifier, "function");
-
-      SourceRange DoubleIdentifierRange(NameLoc, Tok.getLoc());
-
-      // Provide two fix-its: a direct concatenation of the two identifiers
-      // and a camel-cased version.
-
-      auto DirectConcatenation = NameTok.getText().str() + Tok.getText().str();
-
-      diagnose(Tok.getLoc(), diag::join_identifiers)
-        .fixItReplace(DoubleIdentifierRange, DirectConcatenation);
-
-      SmallString<8> CapitalizedScratch;
-      auto Capitalized = camel_case::toSentencecase(Tok.getText(),
-                                                    CapitalizedScratch);
-      auto CamelCaseConcatenation = NameTok.getText().str() + Capitalized.str();
-
-      if (DirectConcatenation != CamelCaseConcatenation)
-        diagnose(Tok.getLoc(), diag::join_identifiers_camel_case)
-          .fixItReplace(DoubleIdentifierRange, CamelCaseConcatenation);
-
-      consumeToken();
+      diagnoseDoubleIdentifier(*this, NameTok);
     }
   }
 
