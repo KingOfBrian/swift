@@ -92,7 +92,7 @@ func test_property_of_lvalue(_ x: Error) -> String {
 // CHECK:         return [[RESULT]]
 // CHECK:      } // end sil function '_TF18boxed_existentials23test_property_of_lvalueFPs5Error_SS'
 extension Error {
-  final func extensionMethod() { }
+  func extensionMethod() { }
 }
 
 // CHECK-LABEL: sil hidden @_TF18boxed_existentials21test_extension_methodFPs5Error_T_

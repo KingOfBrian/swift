@@ -175,12 +175,6 @@ public:
         return;
       }
     }
-
-    // Accept and remove the 'final' attribute from members of protocol
-    // extensions.
-    if (D->getDeclContext()->getAsProtocolExtensionContext()) {
-      D->getAttrs().removeAttribute(attr);
-    }
   }
 
   void visitIndirectAttr(IndirectAttr *attr) {
@@ -990,19 +984,24 @@ void AttributeChecker::visitFinalAttr(FinalAttr *attr) {
   if (isa<ClassDecl>(D))
     return;
 
-  // 'final' only makes sense in the context of a class
-  // declaration or a protocol extension.  Reject it on global functions,
-  // structs, enums, etc.
-  if (!D->getDeclContext()->getAsClassOrClassExtensionContext() &&
-      !D->getDeclContext()->getAsProtocolExtensionContext()) {
-    TC.diagnose(attr->getLocation(), diag::member_cannot_be_final);
+  // 'final' only makes sense in the context of a class declaration.
+  // Reject it on global functions, protocols, structs, enums, etc.
+  if (!D->getDeclContext()->getAsClassOrClassExtensionContext()) {
+    if (TC.Context.isSwiftVersion3() &&
+        D->getDeclContext()->getAsProtocolExtensionContext())
+      TC.diagnose(attr->getLocation(), diag::protocol_extension_cannot_be_final)
+        .fixItRemove(attr->getRange());
+    else
+      TC.diagnose(attr->getLocation(), diag::member_cannot_be_final)
+        .fixItRemove(attr->getRange());
     return;
   }
 
   // We currently only support final on var/let, func and subscript
   // declarations.
   if (!isa<VarDecl>(D) && !isa<FuncDecl>(D) && !isa<SubscriptDecl>(D)) {
-    TC.diagnose(attr->getLocation(), diag::final_not_allowed_here);
+    TC.diagnose(attr->getLocation(), diag::final_not_allowed_here)
+      .fixItRemove(attr->getRange());
     return;
   }
 
@@ -1011,7 +1010,8 @@ void AttributeChecker::visitFinalAttr(FinalAttr *attr) {
       unsigned Kind = 2;
       if (auto *VD = dyn_cast<VarDecl>(FD->getAccessorStorageDecl()))
         Kind = VD->isLet() ? 1 : 0;
-      TC.diagnose(attr->getLocation(), diag::final_not_on_accessors, Kind);
+      TC.diagnose(attr->getLocation(), diag::final_not_on_accessors, Kind)
+        .fixItRemove(attr->getRange());
       return;
     }
   }

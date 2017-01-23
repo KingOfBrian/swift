@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift
+// RUN: %target-typecheck-verify-swift -swift-version 4
 
 class Super {
   final var i: Int { get { return 5 } } // expected-note{{overridden declaration is here}}
@@ -24,11 +24,27 @@ class Sub : Super {
 
 
 struct SomeStruct {
-  final func f() {} // expected-error {{only classes and class members may be marked with 'final'}}
+  final func structFunc() {} // expected-error {{only classes and class members may be marked with 'final'}} {{3-9=}}
 }
 
-struct SomeEnum {
-  final func f() {}  // expected-error {{only classes and class members may be marked with 'final'}}
+enum SomeEnum {
+  final func enumFunc() {}  // expected-error {{only classes and class members may be marked with 'final'}} {{3-9=}}
+}
+
+protocol SomeProto {
+  final func protoFunc()  // expected-error {{only classes and class members may be marked with 'final'}} {{3-9=}}
+}
+
+extension SomeStruct {
+  final func structExtensionFunc() {}  // expected-error {{only classes and class members may be marked with 'final'}} {{3-9=}}
+}
+
+extension SomeEnum {
+  final func enumExtensionFunc() {}  // expected-error {{only classes and class members may be marked with 'final'}} {{3-9=}}
+}
+
+extension SomeProto {
+  final func protoExtensionFunc() {}  // expected-error {{only classes and class members may be marked with 'final'}} {{3-9=}}
 }
 
 extension Super {
@@ -36,7 +52,7 @@ extension Super {
   
 }
 
-final func global_function() {}  // expected-error {{only classes and class members may be marked with 'final'}}
+final func global_function() {}  // expected-error {{only classes and class members may be marked with 'final'}} {{1-7=}}
 
 final
 class Super2 {
