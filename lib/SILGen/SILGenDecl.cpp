@@ -1298,6 +1298,13 @@ void SILGenModule::emitExternalWitnessTable(ProtocolConformance *c) {
   lastEmittedConformance = root;
 }
 
+void SILGenModule::emitVTables() {
+  for (auto *theClass : VTablesPending) {
+    auto vtableEntries = VTableEntryMap[theClass];
+    SILVTable::create(M, theClass, *vtableEntries);
+  }
+}
+
 void SILGenModule::emitExternalDefinition(Decl *d) {
   switch (d->getKind()) {
   case DeclKind::Func: {

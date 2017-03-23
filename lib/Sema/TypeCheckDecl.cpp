@@ -6196,7 +6196,8 @@ public:
     // be overridden.
     if ((base->getDeclContext()->isExtensionContext() ||
          override->getDeclContext()->isExtensionContext()) &&
-        !base->isObjC() && !isKnownObjC) {
+        !base->isObjC() && !isKnownObjC &&
+        base->getModuleContext() != override->getModuleContext()) {
       TC.diagnose(override, diag::override_decl_extension,
                   !override->getDeclContext()->isExtensionContext());
       TC.diagnose(base, diag::overridden_here);
@@ -6215,6 +6216,7 @@ public:
             .fixItInsert(override->getStartLoc(), "override ");
       else
         TC.diagnose(override, diag::missing_override);
+
       TC.diagnose(base, diag::overridden_here);
       override->getAttrs().add(
           new (TC.Context) OverrideAttr(SourceLoc()));
@@ -6223,13 +6225,11 @@ public:
     // If the overridden method is declared in a Swift Class Declaration,
     // dispatch will use table dispatch. If the override is in an extension
     // warn, since it is not added to the class vtable.
-    //
-    // FIXME: Only warn if the extension is in another module, and if
-    // it is in the same module, update the vtable.
     if (auto *baseDecl = dyn_cast<ClassDecl>(base->getDeclContext())) {
       if (baseDecl->hasKnownSwiftImplementation() && 
           !base->isDynamic() && !isKnownObjC &&
-          override->getDeclContext()->isExtensionContext()) {
+          override->getDeclContext()->isExtensionContext() &&
+          base->getModuleContext() != override->getModuleContext()) {
         // For compatibility, only generate a warning in Swift 3
         TC.diagnose(override, (TC.Context.isSwiftVersion3()
           ? diag::override_class_declaration_in_extension_warning
@@ -6237,6 +6237,7 @@ public:
         TC.diagnose(base, diag::overridden_here);
       }
     }
+    
     // If the overriding declaration is 'throws' but the base is not,
     // complain.
     if (auto overrideFn = dyn_cast<AbstractFunctionDecl>(override)) {

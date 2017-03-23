@@ -18,6 +18,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#define DEBUG_TYPE "silgen"
 #include "SILGenFunction.h"
 #include "Scope.h"
 #include "ManagedValue.h"
@@ -26,6 +27,7 @@
 #include "swift/AST/TypeMemberVisitor.h"
 #include "swift/SIL/SILArgument.h"
 #include "swift/SIL/TypeLowering.h"
+#include "llvm/Support/Debug.h"
 
 using namespace swift;
 using namespace Lowering;
@@ -151,20 +153,27 @@ class SILGenVTable : public Lowering::ASTVisitor<SILGenVTable> {
 public:
   SILGenModule &SGM;
   ClassDecl *theClass;
-  std::vector<SILVTable::Entry> vtableEntries;
+  
+  std::vector<SILVTable::Entry> &getVTableEntries() {
+    auto *entries = SGM.VTableEntryMap.lookup(theClass);
+    if (!entries) {
+      entries = new std::vector<SILVTable::Entry>();
+      SGM.VTableEntryMap.insert({theClass, entries});
+    }
+    return *entries;
+  }
 
   SILGenVTable(SILGenModule &SGM, ClassDecl *theClass)
-    : SGM(SGM), theClass(theClass)
-  {
-    // Populate the superclass members, if any.
+    : SGM(SGM), theClass(theClass) {}
+
+  void addDeclaration() {
+    // Store the pending vtable creation
+    SGM.VTablesPending.push_back(theClass);
+
+    // Populate VTable with the superclass members, if any.
     Type super = theClass->getSuperclass();
     if (super && super->getClassOrBoundGenericClass())
       visitAncestor(super->getClassOrBoundGenericClass());
-  }
-
-  ~SILGenVTable() {
-    // Create the vtable.
-    SILVTable::create(SGM.M, theClass, vtableEntries);
   }
 
   void visitAncestor(ClassDecl *ancestor) {
@@ -204,7 +213,7 @@ public:
     // NB: Mutates vtableEntries in-place
     // FIXME: O(n^2)
     if (auto overridden = member.getNextOverriddenVTableEntry()) {
-      for (SILVTable::Entry &entry : vtableEntries) {
+      for (SILVTable::Entry &entry : getVTableEntries()) {
         SILDeclRef ref = overridden;
 
         do {
@@ -230,7 +239,7 @@ public:
       return;
 
     // Otherwise, introduce a new vtable entry.
-    vtableEntries.push_back(getVtableEntry(member));
+    getVTableEntries().push_back(getVtableEntry(member));
   }
 
   // Default for members that don't require vtable entries.
@@ -328,8 +337,10 @@ public:
   /// Emit SIL functions for all the members of the type.
   void emitType() {
     // Start building a vtable if this is a class.
-    if (auto theClass = dyn_cast<ClassDecl>(theType))
+    if (auto theClass = dyn_cast<ClassDecl>(theType)) {
       genVTable.emplace(SGM, theClass);
+      genVTable->addDeclaration();
+    }
 
     for (Decl *member : theType->getMembers()) {
       if (genVTable)
@@ -432,14 +443,24 @@ void SILGenModule::visitNominalTypeDecl(NominalTypeDecl *ntd) {
 class SILGenExtension : public TypeMemberVisitor<SILGenExtension> {
 public:
   SILGenModule &SGM;
+  Optional<SILGenVTable> genVTable;
 
   SILGenExtension(SILGenModule &SGM)
     : SGM(SGM) {}
 
   /// Emit SIL functions for all the members of the extension.
   void emitExtension(ExtensionDecl *e) {
-    for (Decl *member : e->getMembers())
+    
+    if (auto theClass = e->getAsClassOrClassExtensionContext())
+      genVTable.emplace(SGM, theClass);
+
+    for (Decl *member : e->getMembers()) {
+      if (genVTable) {
+        genVTable->visit(member);
+      }
+    
       visit(member);
+    }
 
     if (!e->getExtendedType()->isExistentialType()) {
       // Emit witness tables for protocol conformances introduced by the
@@ -513,3 +534,189 @@ public:
 void SILGenModule::visitExtensionDecl(ExtensionDecl *ed) {
   SILGenExtension(*this).emitExtension(ed);
 }
+
+void SILGenModule::emitSourceFile(SourceFile *sf, unsigned startElem) {
+  //SourceFileScope scope(*this, sf);
+  for (Decl *D : llvm::makeArrayRef(sf->Decls).slice(startElem))
+    visit(D);
+
+  for (Decl *D : sf->LocalTypeDecls)
+    visit(D);
+
+  // Explicitly walk the extensions in all other files if the compile is not
+  // in WMO
+  if (!M.wholeModule) {
+    for (auto *otherFile : M.getSwiftModule()->getFiles()) {
+      auto *otherSF = dyn_cast<SourceFile>(otherFile);
+      if (otherFile == sf || !otherSF) 
+        continue;
+
+      for (auto *decl : otherSF->Decls) {
+        auto extDecl = dyn_cast<ExtensionDecl>(decl);
+        if (!extDecl) 
+          continue;
+        auto classDecl = extDecl->getAsClassOrClassExtensionContext();
+        if (!classDecl)
+          continue;
+
+        SILGenVTable vtable(*this, classDecl);
+        for (auto *member : extDecl->getMembers()) {
+          vtable.visit(member);
+        }
+      }
+    }
+  }
+
+  // Mark any conformances as "used".
+  for (auto conformance : sf->getUsedConformances())
+    useConformance(ProtocolConformanceRef(conformance));
+}
+
+namespace {
+
+/// An RAII class to scope source file codegen.
+class SourceFileScope {
+  SILGenModule &sgm;
+  SourceFile *sf;
+  Optional<Scope> scope;
+public:
+  SourceFileScope(SILGenModule &sgm, SourceFile *sf) : sgm(sgm), sf(sf) {
+    // If this is the script-mode file for the module, create a toplevel.
+    if (sf->isScriptMode()) {
+      assert(!sgm.TopLevelSGF && "already emitted toplevel?!");
+      assert(!sgm.M.lookUpFunction(SWIFT_ENTRY_POINT_FUNCTION)
+             && "already emitted toplevel?!");
+
+      RegularLocation TopLevelLoc = RegularLocation::getModuleLocation();
+      SILFunction *toplevel = sgm.emitTopLevelFunction(TopLevelLoc);
+
+      // Assign a debug scope pointing into the void to the top level function.
+      toplevel->setDebugScope(new (sgm.M) SILDebugScope(TopLevelLoc, toplevel));
+
+      sgm.TopLevelSGF = new SILGenFunction(sgm, *toplevel);
+      sgm.TopLevelSGF->MagicFunctionName = sgm.SwiftModule->getName();
+      sgm.TopLevelSGF->prepareEpilog(Type(), false,
+                                 CleanupLocation::getModuleCleanupLocation());
+
+      sgm.TopLevelSGF->prepareRethrowEpilog(
+                                 CleanupLocation::getModuleCleanupLocation());
+
+      // Create the argc and argv arguments.
+      auto PrologueLoc = RegularLocation::getModuleLocation();
+      PrologueLoc.markAsPrologue();
+      auto entry = sgm.TopLevelSGF->B.getInsertionBB();
+      auto paramTypeIter =
+          sgm.TopLevelSGF->F.getConventions().getParameterSILTypes().begin();
+      entry->createFunctionArgument(*paramTypeIter);
+      entry->createFunctionArgument(*std::next(paramTypeIter));
+
+      scope.emplace(sgm.TopLevelSGF->Cleanups,
+                    CleanupLocation::getModuleCleanupLocation());
+    }
+  }
+
+  ~SourceFileScope() {
+    if (sgm.TopLevelSGF) {
+      scope.reset();
+
+      // Unregister the top-level function emitter.
+      auto &gen = *sgm.TopLevelSGF;
+      sgm.TopLevelSGF = nullptr;
+
+      // Write out the epilog.
+      auto moduleLoc = RegularLocation::getModuleLocation();
+      moduleLoc.markAutoGenerated();
+      auto returnInfo = gen.emitEpilogBB(moduleLoc);
+      auto returnLoc = returnInfo.second;
+      returnLoc.markAutoGenerated();
+
+      SILType returnType = gen.F.getConventions().getSingleSILResultType();
+      auto emitTopLevelReturnValue = [&](unsigned value) -> SILValue {
+        // Create an integer literal for the value.
+        auto litType = SILType::getBuiltinIntegerType(32, sgm.getASTContext());
+        SILValue retValue =
+          gen.B.createIntegerLiteral(moduleLoc, litType, value);
+
+        // Wrap that in a struct if necessary.
+        if (litType != returnType) {
+          retValue = gen.B.createStruct(moduleLoc, returnType, retValue);
+        }
+        return retValue;
+      };
+
+      // Fallthrough should signal a normal exit by returning 0.
+      SILValue returnValue;
+      if (gen.B.hasValidInsertionPoint())
+        returnValue = emitTopLevelReturnValue(0);
+
+      // Handle the implicit rethrow block.
+      auto rethrowBB = gen.ThrowDest.getBlock();
+      gen.ThrowDest = JumpDest::invalid();
+
+      // If the rethrow block wasn't actually used, just remove it.
+      if (rethrowBB->pred_empty()) {
+        gen.eraseBasicBlock(rethrowBB);
+
+      // Otherwise, we need to produce a unified return block.
+      } else {
+        auto returnBB = gen.createBasicBlock();
+        if (gen.B.hasValidInsertionPoint())
+          gen.B.createBranch(returnLoc, returnBB, returnValue);
+        returnValue =
+            returnBB->createPHIArgument(returnType, ValueOwnershipKind::Owned);
+        gen.B.emitBlock(returnBB);
+
+        // Emit the rethrow block.
+        SavedInsertionPoint savedIP(gen, rethrowBB,
+                                    FunctionSection::Postmatter);
+
+        // Log the error.
+        SILValue error = rethrowBB->getArgument(0);
+        gen.B.createBuiltin(moduleLoc,
+                            sgm.getASTContext().getIdentifier("errorInMain"),
+                            sgm.Types.getEmptyTupleType(), {}, {error});
+
+        // Signal an abnormal exit by returning 1.
+        gen.Cleanups.emitCleanupsForReturn(CleanupLocation::get(moduleLoc));
+        gen.B.createBranch(returnLoc, returnBB, emitTopLevelReturnValue(1));
+      }
+
+      // Return.
+      if (gen.B.hasValidInsertionPoint())
+        gen.B.createReturn(returnLoc, returnValue);
+
+      // Okay, we're done emitting the top-level function; destroy the
+      // emitter and verify the result.
+      SILFunction *toplevel = &gen.getFunction();
+      delete &gen;
+
+      DEBUG(llvm::dbgs() << "lowered toplevel sil:\n";
+            toplevel->print(llvm::dbgs()));
+      toplevel->verify();
+    }
+
+    // If the source file contains an artificial main, emit the implicit
+    // toplevel code.
+    if (auto mainClass = sf->getMainClass()) {
+      assert(!sgm.M.lookUpFunction(SWIFT_ENTRY_POINT_FUNCTION)
+             && "already emitted toplevel before main class?!");
+
+      RegularLocation TopLevelLoc = RegularLocation::getModuleLocation();
+      SILFunction *toplevel = sgm.emitTopLevelFunction(TopLevelLoc);
+
+      // Assign a debug scope pointing into the void to the top level function.
+      toplevel->setDebugScope(new (sgm.M) SILDebugScope(TopLevelLoc, toplevel));
+
+      // Create the argc and argv arguments.
+      SILGenFunction gen(sgm, *toplevel);
+      auto entry = gen.B.getInsertionBB();
+      auto paramTypeIter =
+          gen.F.getConventions().getParameterSILTypes().begin();
+      entry->createFunctionArgument(*paramTypeIter);
+      entry->createFunctionArgument(*std::next(paramTypeIter));
+      gen.emitArtificialTopLevel(mainClass);
+    }
+  }
+};
+
+} // end anonymous namespace

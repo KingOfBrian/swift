@@ -3880,7 +3880,7 @@ void SILVTable::verify(const SILModule &M) const {
     if (entry.Method.kind == SILDeclRef::Kind::IVarDestroyer)
       theClass = dyn_cast<ClassDecl>(decl);
     else
-      theClass = dyn_cast<ClassDecl>(decl->getDeclContext());
+      theClass = decl->getDeclContext()->getAsClassOrClassExtensionContext();
 
     assert(theClass && "vtable entry must refer to a class member");
 
