@@ -526,7 +526,7 @@ void CompilerInstance::performSema() {
   // Type-check each top-level input besides the main source file.
   for (auto File : MainModule->getFiles())
     if (auto SF = dyn_cast<SourceFile>(File))
-      if (PrimaryBufferID == NO_SUCH_BUFFER || SF == PrimarySourceFile)
+//      if (PrimaryBufferID == NO_SUCH_BUFFER || SF == PrimarySourceFile)
         performTypeChecking(*SF, PersistentState.getTopLevelContext(),
                             TypeCheckOptions, /*curElem*/0,
                             options.WarnLongFunctionBodies);
