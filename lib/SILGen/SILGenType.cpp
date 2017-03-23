@@ -160,6 +160,8 @@ public:
     Type super = theClass->getSuperclass();
     if (super && super->getClassOrBoundGenericClass())
       visitAncestor(super->getClassOrBoundGenericClass());
+
+    visitExtensions(theClass);
   }
 
   ~SILGenVTable() {
@@ -177,6 +179,16 @@ public:
     if (!ancestor->hasClangNode()) {
       for (auto member : ancestor->getMembers())
         visit(member);
+
+      visitExtensions(ancestor);
+    }
+  }
+
+  void visitExtensions(ClassDecl *classDecl) {
+    for (auto *extension : classDecl->getExtensions()) {
+      for (auto *member : extension->getMembers()) {
+        visit(member);
+      }
     }
   }
 

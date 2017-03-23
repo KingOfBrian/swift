@@ -890,11 +890,6 @@ SILDeclRef SILDeclRef::getNextOverriddenVTableEntry() const {
           return SILDeclRef();
       }
 
-    // If we overrode a decl from an extension, it won't be in a vtable
-    // either. This can occur for extensions to ObjC classes.
-    if (isa<ExtensionDecl>(overridden.getDecl()->getDeclContext()))
-      return SILDeclRef();
-
     // If we overrode a non-required initializer, there won't be a vtable
     // slot for the allocator.
     if (overridden.kind == SILDeclRef::Kind::Allocator &&
