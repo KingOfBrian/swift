@@ -1,29 +1,10 @@
-// RUN: %target-typecheck-verify-swift -parse-as-library -swift-version 4
+// RUN: rm -rf %t
+// RUN: mkdir -p %t
+// RUN: %target-swift-frontend -disable-objc-attr-requires-foundation-module -emit-module-path %t/Mod.swiftmodule -module-name Mod %S/Inputs/override_other_module.swift
+// RUN: %target-typecheck-verify-swift -parse-as-library -swift-version 4 -I %t
+// REQUIRES: objc_interop
 
-@objc class ObjCClassA {}
-@objc class ObjCClassB : ObjCClassA {}
-
-class A { 
-  func f1() { } // expected-note{{overridden declaration is here}}
-  func f2() -> A { } // expected-note{{overridden declaration is here}}
-
-  @objc func f3() { } // expected-note{{overridden declaration is here}}
-  @objc func f4() -> ObjCClassA { } // expected-note{{overridden declaration is here}}
-  @objc var v1: Int { return 0 } // expected-note{{overridden declaration is here}}
-  @objc var v2: Int { return 0 } // expected-note{{overridden declaration is here}}
-  @objc var v3: Int = 0 // expected-note{{overridden declaration is here}}
-
-  dynamic func f3D() { }
-  dynamic func f4D() -> ObjCClassA { }
-}
-
-extension A {
-  func f5() { } // expected-note{{overridden declaration is here}}
-  func f6() -> A { } // expected-note{{overridden declaration is here}}
-
-  @objc func f7() { }
-  @objc func f8() -> ObjCClassA { }
-}
+import Mod
 
 class B : A { }
 

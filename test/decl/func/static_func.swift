@@ -111,4 +111,3 @@ protocol P {
   static func f3() {} // expected-error {{protocol methods may not have bodies}}
   static final func f4() // expected-error {{only classes and class members may be marked with 'final'}}
 }
-

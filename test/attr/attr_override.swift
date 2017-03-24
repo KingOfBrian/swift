@@ -65,8 +65,6 @@ class A {
     get { return self }
     set { }
   }
-
-  func overriddenInExtension() {} // expected-note {{overridden declaration is here}}
 }
 
 class B : A {
@@ -135,10 +133,6 @@ class B : A {
   override init() { }
   override deinit { } // expected-error{{'override' modifier cannot be applied to this declaration}} {{3-12=}}
   override typealias Inner = Int // expected-error{{'override' modifier cannot be applied to this declaration}} {{3-12=}}
-}
-
-extension B {
-  override func overriddenInExtension() {} // expected-error{{declarations in extensions cannot override yet}}
 }
 
 struct S {

@@ -1,8 +1,10 @@
-// RUN: %target-typecheck-verify-swift -parse-as-library -swift-version 3
+// RUN: rm -rf %t
+// RUN: mkdir -p %t
+// RUN: %target-swift-frontend -disable-objc-attr-requires-foundation-module -emit-module-path %t/Mod.swiftmodule -module-name Mod %S/Inputs/override_other_module.swift
+// RUN: %target-typecheck-verify-swift -parse-as-library -swift-version 3 -I %t
+// REQUIRES: objc_interop
 
-class A { 
-  @objc func objcVirtualFunction() { } // expected-note{{overridden declaration is here}}
-}
+import Mod
 
 class B : A { }
 
