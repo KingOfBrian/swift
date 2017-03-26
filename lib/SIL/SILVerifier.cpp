@@ -2119,10 +2119,6 @@ public:
     require(CMI->getMember().isForeign
             || !CMI->getMember().getDecl()->hasClangNode(),
             "foreign method cannot be dispatched natively");
-
-    require(CMI->getMember().isForeign
-            || !isa<ExtensionDecl>(CMI->getMember().getDecl()->getDeclContext()),
-            "extension method cannot be dispatched natively");
     
     // TODO: We should enforce that ObjC methods are dispatched on ObjC
     // metatypes, but IRGen appears not to care right now.
