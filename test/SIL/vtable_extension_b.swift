@@ -2,6 +2,7 @@
 
 extension Base {
   func inBE() {}
+  final func finBE() {}
 }
 
 class Derived: Base {
@@ -18,6 +19,3 @@ class Derived: Base {
 // CHECK: }
 
 // CHECK-NOT: sil_vtable Base
-
-
-// FIXME: Add test for nested and local types
