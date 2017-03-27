@@ -4285,8 +4285,18 @@ public:
     }
   }
 
-
   void visitClassDecl(ClassDecl *CD) {
+    // Resolve the signatures of all ValueDecl's in extensions. This ensures
+    // that they can be mangled properly. This is required for cross-file VTable
+    // extensions.
+    for (auto ED : CD->getExtensions()) {
+      for (auto member : ED->getMembers()) {
+        if (auto VD = dyn_cast<ValueDecl>(member)) {
+          TC.resolveDeclSignature(VD);
+        }
+      }
+    }
+
     TC.checkDeclAttributesEarly(CD);
     TC.computeAccessibility(CD);
 
