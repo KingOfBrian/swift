@@ -433,7 +433,7 @@ bool irgen::hasKnownSwiftMetadata(IRGenModule &IGM, ClassDecl *theClass) {
 /// Is the given method known to be callable by vtable lookup?
 bool irgen::hasKnownVTableEntry(IRGenModule &IGM,
                                 AbstractFunctionDecl *theMethod) {
-  auto theClass = dyn_cast<ClassDecl>(theMethod->getDeclContext());
+  auto theClass = theMethod->getDeclContext()->getAsClassOrClassExtensionContext();
   // Extension methods don't get vtable entries.
   if (!theClass) {
     return false;
@@ -4669,8 +4669,8 @@ llvm::Value *irgen::emitVirtualMethodValue(IRGenFunction &IGF,
   // type of the overridden method.
   llvm::AttributeSet attrs;
   auto fnTy = IGF.IGM.getFunctionType(methodType, attrs)->getPointerTo();
-
-  auto declaringClass = cast<ClassDecl>(overridden.getDecl()->getDeclContext());
+  auto afd = cast<AbstractFunctionDecl>(overridden.getDecl());
+  auto declaringClass = afd->getDeclContext()->getAsClassOrClassExtensionContext();
   auto index = FindClassMethodIndex(IGF.IGM, declaringClass, overridden)
                  .getTargetIndex();
 
