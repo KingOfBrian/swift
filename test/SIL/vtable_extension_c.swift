@@ -1,10 +1,10 @@
 // RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -emit-sil -O -primary-file %s %S/vtable_extension_a.swift %S/vtable_extension_b.swift -module-name main | %FileCheck %s
 
 extension Derived {
-  func inDE() {}
+  func inDE() { print("Derived.inDE()") }
 
-  override func inBE() {}
-  override func inBD() {}
+  override func inBE() { print("Derived.inBE()") }
+  override func inBD() { print("Derived.inBD()") }
 }
 // CHECK-NOT: sil_vtable Derived {
 // CHECK-NOT: sil_vtable Base {

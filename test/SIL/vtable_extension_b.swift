@@ -1,12 +1,12 @@
 // RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -emit-sil -O -primary-file %s %S/vtable_extension_a.swift %S/vtable_extension_c.swift -module-name main | %FileCheck %s
 
 extension Base {
-  func inBE() {}
-  final func finBE() {}
+  func inBE() { print("Base.inBE()") }
+  final func finBE() { print("Base.finBE()") }
 }
 
 class Derived: Base {
-  func inDD() {}
+  func inDD() { print("Derived.inDD()") }
 }
 
 // CHECK: sil_vtable Derived {

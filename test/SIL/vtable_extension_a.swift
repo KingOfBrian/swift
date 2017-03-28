@@ -1,7 +1,7 @@
 // RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -emit-sil -O -primary-file %s %S/vtable_extension_b.swift %S/vtable_extension_c.swift -module-name main | %FileCheck %s
 
 class Base {
-  func inBD() {}
+  func inBD() { print("Base.inBD()") }
 }
 
 // CHECK: sil_vtable Base {
