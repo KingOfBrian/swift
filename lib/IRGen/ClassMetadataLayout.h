@@ -74,6 +74,48 @@ public:
   }
 
 private:
+  void addClassMember(Decl *member) {
+    // If this is a non-overriding final member, we don't need table entries.
+    // FIXME: do we really need entries for final overrides?  The
+    // superclass should provide the entries it needs, and
+    // reabstracting overrides shouldn't be required: if we know
+    // enough to call the override, we know enough to call it
+    // directly.
+    if (auto *VD = dyn_cast<ValueDecl>(member))
+      if (VD->isFinal() && VD->getOverriddenDecl() == nullptr)
+        return;
+
+    // @NSManaged properties and methods don't have vtable entries.
+    if (member->getAttrs().hasAttribute<NSManagedAttr>())
+      return;
+
+    // Add entries for methods.
+    if (auto fn = dyn_cast<FuncDecl>(member)) {
+      // Ignore accessors.  These get added when their AbstractStorageDecl is
+      // visited.
+      if (fn->isAccessor())
+        return;
+
+      addMethodEntries(fn);
+    } else if (auto ctor = dyn_cast<ConstructorDecl>(member)) {
+      // Stub constructors don't get an entry.
+      if (ctor->hasStubImplementation())
+        return;
+
+      // Add entries for constructors.
+      addMethodEntries(ctor);
+    } else if (auto *asd = dyn_cast<AbstractStorageDecl>(member)) {
+      // FIXME: Stored properties should either be final or have accessors.
+      if (!asd->hasAccessorFunctions()) return;
+
+      addMethodEntries(asd->getGetter());
+      if (auto *setter = asd->getSetter())
+        addMethodEntries(setter);
+      if (auto *materializeForSet = asd->getMaterializeForSetFunc())
+        addMethodEntries(materializeForSet);
+    }
+  }
+
   /// Add fields associated with the given class and its bases.
   void addClassMembers(ClassDecl *theClass, Type type) {
     // Add any fields associated with the superclass.
@@ -103,44 +145,11 @@ private:
 
     // Add entries for the methods.
     for (auto member : theClass->getMembers()) {
-      // If this is a non-overriding final member, we don't need table entries.
-      // FIXME: do we really need entries for final overrides?  The
-      // superclass should provide the entries it needs, and
-      // reabstracting overrides shouldn't be required: if we know
-      // enough to call the override, we know enough to call it
-      // directly.
-      if (auto *VD = dyn_cast<ValueDecl>(member))
-        if (VD->isFinal() && VD->getOverriddenDecl() == nullptr)
-          continue;
-
-      // @NSManaged properties and methods don't have vtable entries.
-      if (member->getAttrs().hasAttribute<NSManagedAttr>())
-        continue;
-
-      // Add entries for methods.
-      if (auto fn = dyn_cast<FuncDecl>(member)) {
-        // Ignore accessors.  These get added when their AbstractStorageDecl is
-        // visited.
-        if (fn->isAccessor())
-          continue;
-
-        addMethodEntries(fn);
-      } else if (auto ctor = dyn_cast<ConstructorDecl>(member)) {
-        // Stub constructors don't get an entry.
-        if (ctor->hasStubImplementation())
-          continue;
-
-        // Add entries for constructors.
-        addMethodEntries(ctor);
-      } else if (auto *asd = dyn_cast<AbstractStorageDecl>(member)) {
-        // FIXME: Stored properties should either be final or have accessors.
-        if (!asd->hasAccessorFunctions()) continue;
-
-        addMethodEntries(asd->getGetter());
-        if (auto *setter = asd->getSetter())
-          addMethodEntries(setter);
-        if (auto *materializeForSet = asd->getMaterializeForSetFunc())
-          addMethodEntries(materializeForSet);
+      addClassMember(member);
+    }
+    for (auto extension : theClass->getExtensions()) {
+      for (auto member : extension->getMembers()) {
+        addClassMember(member);
       }
     }
 
