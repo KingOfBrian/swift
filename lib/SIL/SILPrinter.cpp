@@ -29,7 +29,6 @@
 #include "swift/SIL/SILVisitor.h"
 #include "swift/SIL/SILVTable.h"
 #include "swift/AST/Decl.h"
-#include "swift/AST/Expr.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/PrintOptions.h"
@@ -1225,7 +1224,8 @@ public:
 
   void visitUnconditionalCheckedCastValueInst(
       UnconditionalCheckedCastValueInst *CI) {
-    *this << getIDAndType(CI->getOperand()) << " to " << CI->getType();
+    *this << getCastConsumptionKindName(CI->getConsumptionKind()) << ' '
+          << getIDAndType(CI->getOperand()) << " to " << CI->getType();
   }
 
   void visitCheckedCastAddrBranchInst(CheckedCastAddrBranchInst *CI) {
@@ -1633,6 +1633,15 @@ public:
   void visitProjectExistentialBoxInst(ProjectExistentialBoxInst *PEBI) {
     *this << PEBI->getType().getObjectType()
           << " in " << getIDAndType(PEBI->getOperand());
+  }
+  void visitBeginAccessInst(BeginAccessInst *BAI) {
+    *this << '[' << getSILAccessKindName(BAI->getAccessKind()) << "] ["
+          << getSILAccessEnforcementName(BAI->getEnforcement())
+          << "] " << getIDAndType(BAI->getOperand());
+  }
+  void visitEndAccessInst(EndAccessInst *EAI) {
+    *this << (EAI->isAborting() ? "[abort] " : "")
+          << getIDAndType(EAI->getOperand());
   }
 
   void visitCondFailInst(CondFailInst *FI) {

@@ -47,7 +47,7 @@ SILGenFunction::emitInjectOptional(SILLocation loc,
 
   // If the value is loadable, just emit and wrap.
   // TODO: honor +0 contexts?
-  if (optTL.isLoadable()) {
+  if (optTL.isLoadable() || !silConv.useLoweredAddresses()) {
     ManagedValue objectResult = generator(SGFContext());
     auto some = B.createEnum(loc, objectResult.forward(*this), someDecl, optTy);
     return emitManagedRValueWithCleanup(some, optTL);
@@ -109,7 +109,8 @@ void SILGenFunction::emitInjectOptionalNothingInto(SILLocation loc,
 /// works for loadable enum types.
 SILValue SILGenFunction::getOptionalNoneValue(SILLocation loc,
                                               const TypeLowering &optTL) {
-  assert(optTL.isLoadable() && "Address-only optionals cannot use this");
+  assert((optTL.isLoadable() || !silConv.useLoweredAddresses()) &&
+         "Address-only optionals cannot use this");
   assert(optTL.getLoweredType().getAnyOptionalObjectType());
 
   return B.createEnum(loc, SILValue(), getASTContext().getOptionalNoneDecl(),
@@ -313,7 +314,7 @@ SILGenFunction::emitOptionalToOptional(SILLocation loc,
   // If the result is address-only, we need to return something in memory,
   // otherwise the result is the BBArgument in the merge point.
   ManagedValue finalResult;
-  if (resultTL.isAddressOnly()) {
+  if (resultTL.isAddressOnly() && silConv.useLoweredAddresses()) {
     finalResult = emitManagedBufferWithCleanup(
         emitTemporaryAllocation(loc, resultTy), resultTL);
   } else {
@@ -328,7 +329,8 @@ SILGenFunction::emitOptionalToOptional(SILLocation loc,
         // transforming the underlying type instead of the optional type. This
         // ensures that we use the more efficient non-generic code paths when
         // possible.
-        if (F.getTypeLowering(input.getType()).isAddressOnly()) {
+        if (F.getTypeLowering(input.getType()).isAddressOnly() &&
+            silConv.useLoweredAddresses()) {
           auto *someDecl = B.getASTContext().getOptionalSomeDecl();
           input = B.createUncheckedTakeEnumDataAddr(
               loc, input, someDecl, input.getType().getAnyOptionalObjectType());
@@ -336,29 +338,29 @@ SILGenFunction::emitOptionalToOptional(SILLocation loc,
 
         ManagedValue result = transformValue(*this, loc, input, noOptResultTy);
 
-        if (!resultTL.isAddressOnly()) {
+        if (!(resultTL.isAddressOnly() && silConv.useLoweredAddresses())) {
           SILValue some = B.createOptionalSome(loc, result).forward(*this);
-          return scope.exit(loc, some);
+          return scope.exitAndBranch(loc, some);
         }
 
         RValue R(*this, loc, noOptResultTy.getSwiftRValueType(), result);
         ArgumentSource resultValueRV(loc, std::move(R));
         emitInjectOptionalValueInto(loc, std::move(resultValueRV),
                                     finalResult.getValue(), resultTL);
-        return scope.exit(loc);
+        return scope.exitAndBranch(loc);
       });
 
   SEBuilder.addCase(
       getASTContext().getOptionalNoneDecl(), isNotPresentBB, contBB,
       [&](ManagedValue input, SwitchCaseFullExpr &scope) {
-        if (!resultTL.isAddressOnly()) {
+        if (!(resultTL.isAddressOnly() && silConv.useLoweredAddresses())) {
           SILValue none =
               B.createManagedOptionalNone(loc, resultTy).forward(*this);
-          return scope.exit(loc, none);
+          return scope.exitAndBranch(loc, none);
         }
 
         emitInjectOptionalNothingInto(loc, finalResult.getValue(), resultTL);
-        return scope.exit(loc);
+        return scope.exitAndBranch(loc);
       });
 
   std::move(SEBuilder).emit();
@@ -665,7 +667,7 @@ ManagedValue SILGenFunction::emitExistentialErasure(
       }
     }
 
-    if (!C.getEmitInto() && !silConv.useLoweredAddresses()) {
+    if (!silConv.useLoweredAddresses()) {
       // We should never create new buffers just for init_existential under
       // opaque values mode: This is a case of an opaque value that we can
       // "treat" as a by-value one
@@ -760,7 +762,7 @@ SILGenFunction::OpaqueValueState
 SILGenFunction::emitOpenExistential(
        SILLocation loc,
        ManagedValue existentialValue,
-       CanArchetypeType openedArchetype,
+       ArchetypeType *openedArchetype,
        SILType loweredOpenedType,
        AccessKind accessKind) {
   // Open the existential value into the opened archetype value.
@@ -775,6 +777,12 @@ SILGenFunction::emitOpenExistential(
     if (existentialType.isAddress()) {
       OpenedExistentialAccess allowedAccess =
           getOpenedExistentialAccessFor(accessKind);
+      if (!loweredOpenedType.isAddress()) {
+        assert(!silConv.useLoweredAddresses() &&
+               "Non-address loweredOpenedType is only allowed under opaque "
+               "value mode");
+        loweredOpenedType = loweredOpenedType.getAddressType();
+      }
       archetypeValue =
           B.createOpenExistentialAddr(loc, existentialValue.forward(*this),
                                       loweredOpenedType, allowedAccess);

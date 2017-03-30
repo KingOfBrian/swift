@@ -16,7 +16,6 @@
 #include "RValue.h"
 #include "Scope.h"
 #include "ExitableFullExpr.h"
-#include "swift/AST/AST.h"
 #include "swift/SIL/DynamicCasts.h"
 #include "swift/SIL/SILArgument.h"
 #include "swift/SIL/TypeLowering.h"
@@ -103,7 +102,8 @@ namespace {
       ManagedValue result;
       if (Strategy == CastStrategy::Address) {
         result = SGF.B.createUnconditionalCheckedCastValue(
-            Loc, operand, origTargetTL.getLoweredType());
+            Loc, CastConsumptionKind::TakeAlways, operand,
+            origTargetTL.getLoweredType());
       } else {
         result = SGF.B.createUnconditionalCheckedCast(
             Loc, operand, origTargetTL.getLoweredType());
@@ -389,7 +389,8 @@ namespace {
       SILValue resultScalar;
       if (Strategy == CastStrategy::Address) {
         resultScalar = SGF.B.createUnconditionalCheckedCastValue(
-            Loc, operand.forward(SGF), origTargetTL.getLoweredType());
+            Loc, CastConsumptionKind::TakeAlways, operand.forward(SGF),
+            origTargetTL.getLoweredType());
       } else {
         resultScalar = SGF.B.createUnconditionalCheckedCast(
             Loc, operand.forward(SGF), origTargetTL.getLoweredType());
@@ -711,7 +712,7 @@ RValue Lowering::emitConditionalCheckedCast(SILGenFunction &SGF,
   SILValue resultObjectBuffer;
   Optional<TemporaryInitialization> resultObjectTemp;
   SGFContext resultObjectCtx;
-  if (resultTL.isAddressOnly() ||
+  if ((resultTL.isAddressOnly() && SGF.silConv.useLoweredAddresses()) ||
       (C.getEmitInto() && C.getEmitInto()->getAddressOrNull())) {
     SILType resultTy = resultTL.getLoweredType();
     resultBuffer = SGF.getBufferForExprResult(loc, resultTy, C);

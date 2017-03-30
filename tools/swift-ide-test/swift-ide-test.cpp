@@ -1150,7 +1150,7 @@ private:
 
   bool visitDeclReference(ValueDecl *D, CharSourceRange Range,
                           TypeDecl *CtorTyRef, ExtensionDecl *ExtTyRef, Type Ty,
-                          SemaReferenceKind Kind) override {
+                          ReferenceMetaData Data) override {
     annotateSourceEntity({ Range, D, CtorTyRef, /*IsRef=*/true });
     return true;
   }
@@ -1158,7 +1158,7 @@ private:
   bool visitSubscriptReference(ValueDecl *D, CharSourceRange Range,
                                bool IsOpenBracket) override {
     return visitDeclReference(D, Range, nullptr, nullptr, Type(),
-                              SemaReferenceKind::SubscriptRef);
+                      ReferenceMetaData(SemaReferenceKind::SubscriptRef, None));
   }
 
   bool visitCallArgName(Identifier Name, CharSourceRange Range,
@@ -1549,9 +1549,10 @@ static int doPrintLocalTypes(const CompilerInvocation &InitInvok,
 
     // Simulate already having mangled names
     for (auto LTD : LocalTypeDecls) {
-      std::string MangledName =
-          NewMangling::mangleTypeForDebugger(LTD->getDeclaredInterfaceType(),
-                                             LTD->getDeclContext());
+      Mangle::ASTMangler Mangler;
+      std::string MangledName = Mangler.mangleTypeForDebugger(
+          LTD->getDeclaredInterfaceType(), LTD->getDeclContext(),
+          LTD->getDeclContext()->getGenericEnvironmentOfContext());
       MangledNames.push_back(MangledName);
     }
 
@@ -1587,7 +1588,7 @@ static int doPrintLocalTypes(const CompilerInvocation &InitInvok,
       while (node->getKind() != NodeKind::LocalDeclName)
         node = node->getChild(1); // local decl name
 
-      auto remangled = Demangle::mangleNode(typeNode, useNewMangling(typeNode));
+      auto remangled = Demangle::mangleNode(typeNode);
 
       auto LTD = M->lookupLocalType(remangled);
 
@@ -2546,7 +2547,7 @@ public:
 
   bool visitDeclReference(ValueDecl *D, CharSourceRange Range,
                           TypeDecl *CtorTyRef, ExtensionDecl *ExtTyRef, Type T,
-                          SemaReferenceKind Kind) override {
+                          ReferenceMetaData Data) override {
     if (SeenDecls.insert(D).second)
       tryDemangleDecl(D, Range, /*isRef=*/true);
 
@@ -2559,7 +2560,9 @@ public:
 
 private:
   void tryDemangleType(Type T, const DeclContext *DC, CharSourceRange range) {
-    std::string mangledName(NewMangling::mangleTypeForDebugger(T, DC));
+    Mangle::ASTMangler Mangler;
+    std::string mangledName(Mangler.mangleTypeForDebugger(
+        T, DC, DC->getGenericEnvironmentOfContext()));
     std::string Error;
     Type ReconstructedType =
         getTypeFromMangledSymbolname(Ctx, mangledName, Error);

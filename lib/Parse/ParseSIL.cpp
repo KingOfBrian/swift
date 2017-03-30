@@ -343,6 +343,24 @@ namespace {
 
     Optional<llvm::coverage::Counter>
     parseSILCoverageExpr(llvm::coverage::CounterExpressionBuilder &Builder);
+
+    template <class T>
+    void setEnum(Optional<T> &existingValue, StringRef &existingValueString,
+                 SourceLoc &existingLoc,
+                 T newValue, StringRef newValueString, SourceLoc newLoc) {
+      if (existingValue) {
+        if (*existingValue == newValue) {
+          P.diagnose(newLoc, diag::duplicate_attribute, /*modifier*/ 1);
+        } else {
+          P.diagnose(newLoc, diag::mutually_exclusive_attrs, newValueString,
+                     existingValueString, /*modifier*/ 1);
+        }
+        P.diagnose(existingLoc, diag::previous_attribute, /*modifier*/ 1);
+      }
+      existingValue = newValue;
+      existingValueString = newValueString;
+      existingLoc = newLoc;
+    }
   };
 } // end anonymous namespace
 
@@ -699,15 +717,20 @@ static SILLinkage resolveSILLinkage(Optional<SILLinkage> linkage,
   }
 }
 
-static bool parseSILOptional(StringRef &Result, SILParser &SP) {
+static bool parseSILOptional(StringRef &Result, SourceLoc &Loc, SILParser &SP) {
   if (SP.P.consumeIf(tok::l_square)) {
     Identifier Id;
-    SP.parseSILIdentifier(Id, diag::expected_in_attribute_list);
+    SP.parseSILIdentifier(Id, Loc, diag::expected_in_attribute_list);
     SP.P.parseToken(tok::r_square, diag::expected_in_attribute_list);
     Result = Id.str();
     return true;
   }
   return false;
+}
+
+static bool parseSILOptional(StringRef &Result, SILParser &SP) {
+  SourceLoc Loc;
+  return parseSILOptional(Result, Loc, SP);
 }
 
 /// Parse an option attribute ('[' Expected ']')?
@@ -2481,9 +2504,34 @@ bool SILParser::parseSILInstruction(SILBasicBlock *BB, SILBuilder &B) {
     break;
   }
 
+  case ValueKind::UnconditionalCheckedCastValueInst: {
+    CastConsumptionKind consumptionKind;
+    Identifier consumptionKindToken;
+    SourceLoc consumptionKindLoc;
+    SILType ty;
+    SILValue destVal;
+    Identifier toToken;
+    SourceLoc toLoc;
+    if (parseSILIdentifier(consumptionKindToken, consumptionKindLoc,
+                           diag::expected_tok_in_sil_instr,
+                           "cast consumption kind") ||
+        parseCastConsumptionKind(consumptionKindToken, consumptionKindLoc,
+                                 consumptionKind))
+      return true;
+
+    if (parseTypedValueRef(Val, B) || parseVerbatim("to") || parseSILType(ty))
+      return true;
+
+    if (parseSILDebugLocation(InstLoc, B))
+      return true;
+
+    ResultVal = B.createUnconditionalCheckedCastValue(InstLoc, consumptionKind,
+                                                      Val, ty);
+    break;
+  }
+
   // Checked Conversion instructions.
   case ValueKind::UnconditionalCheckedCastInst:
-  case ValueKind::UnconditionalCheckedCastValueInst:
   case ValueKind::CheckedCastValueBranchInst:
   case ValueKind::CheckedCastBranchInst: {
     SILType ty;
@@ -2506,11 +2554,6 @@ bool SILParser::parseSILInstruction(SILBasicBlock *BB, SILBuilder &B) {
       if (parseSILDebugLocation(InstLoc, B))
         return true;
       ResultVal = B.createUnconditionalCheckedCast(InstLoc, Val, ty);
-      break;
-    } else if (Opcode == ValueKind::UnconditionalCheckedCastValueInst) {
-      if (parseSILDebugLocation(InstLoc, B))
-        return true;
-      ResultVal = B.createUnconditionalCheckedCastValue(InstLoc, Val, ty);
       break;
     }
     // The conditional cast still needs its branch destinations.
@@ -2724,6 +2767,112 @@ bool SILParser::parseSILInstruction(SILBasicBlock *BB, SILBuilder &B) {
         getLocalValue(BorrowedFromName, BorrowedFromTy, InstLoc, B);
 
     ResultVal = B.createEndBorrow(InstLoc, BorrowedValue, BorrowedFrom);
+    break;
+  }
+
+  case ValueKind::BeginAccessInst: {
+    Optional<SILAccessKind> kind;
+    Optional<SILAccessEnforcement> enforcement;
+    StringRef kindString, enforcementString;
+    SourceLoc kindLoc, enforcementLoc;    
+
+    while (P.consumeIf(tok::l_square)) {
+      Identifier ident;
+      SourceLoc identLoc;
+      if (parseSILIdentifier(ident, identLoc,
+                             diag::expected_in_attribute_list)) {
+        if (P.consumeIf(tok::r_square)) {
+          continue;
+        } else {
+          return true;
+        }
+      }
+
+      auto setEnforcement = [&](SILAccessEnforcement value) {
+        setEnum(enforcement, enforcementString, enforcementLoc,
+                value, ident.str(), identLoc);
+      };
+      auto setKind = [&](SILAccessKind value) {
+        setEnum(kind, kindString, kindLoc, value, ident.str(), identLoc);
+      };
+
+      StringRef attr = ident.str();
+      if (attr == "unknown") {
+        setEnforcement(SILAccessEnforcement::Unknown);
+      } else if (attr == "static") {
+        setEnforcement(SILAccessEnforcement::Static);
+      } else if (attr == "dynamic") {
+        setEnforcement(SILAccessEnforcement::Dynamic);
+      } else if (attr == "unsafe") {
+        setEnforcement(SILAccessEnforcement::Unsafe);
+      } else if (attr == "init") {
+        setKind(SILAccessKind::Init);
+      } else if (attr == "read") {
+        setKind(SILAccessKind::Read);
+      } else if (attr == "modify") {
+        setKind(SILAccessKind::Modify);
+      } else if (attr == "deinit") {
+        setKind(SILAccessKind::Deinit);
+      } else {
+        P.diagnose(identLoc, diag::sil_unknown_access_kind_or_enforcement);
+      }
+
+      if (!P.consumeIf(tok::r_square))
+        return true;
+    }
+
+    if (!kind) {
+      P.diagnose(OpcodeLoc, diag::sil_expected_access_kind, OpcodeName);
+      kind = SILAccessKind::Read;
+    }
+
+    if (!enforcement) {
+      P.diagnose(OpcodeLoc, diag::sil_expected_access_enforcement, OpcodeName);
+      enforcement = SILAccessEnforcement::Unsafe;
+    }
+
+    SILValue addrVal;
+    SourceLoc addrLoc;
+    if (parseTypedValueRef(addrVal, addrLoc, B) ||
+        parseSILDebugLocation(InstLoc, B))
+      return true;
+
+    if (!addrVal->getType().isAddress()) {
+      P.diagnose(addrLoc, diag::sil_operand_not_address, "operand",
+                 OpcodeName);
+      return true;
+    }
+
+    ResultVal = B.createBeginAccess(InstLoc, addrVal, *kind, *enforcement);
+    break;
+  }
+
+  case ValueKind::EndAccessInst: {
+    bool aborting = false;
+
+    StringRef attr;
+    SourceLoc attrLoc;
+    if (parseSILOptional(attr, attrLoc, *this) && attr != "") {
+      if (attr == "abort") {
+        aborting = true;
+      } else {
+        P.diagnose(attrLoc, diag::unknown_attribute, attr);
+      }
+    }
+
+    SILValue addrVal;
+    SourceLoc addrLoc;
+    if (parseTypedValueRef(addrVal, addrLoc, B) ||
+        parseSILDebugLocation(InstLoc, B))
+      return true;
+
+    if (!addrVal->getType().isAddress()) {
+      P.diagnose(addrLoc, diag::sil_operand_not_address, "operand",
+                 OpcodeName);
+      return true;
+    }
+
+    ResultVal = B.createEndAccess(InstLoc, addrVal, aborting);
     break;
   }
 
@@ -4376,9 +4525,9 @@ bool Parser::parseDeclSIL() {
         FunctionState.ParsedTypeCallback = OldParsedTypeCallback;
       };
 
-      FunctionState.ParsedTypeCallback = [&OpenedArchetypesTracker,
-                                          &FunctionState](Type ty) {
-        OpenedArchetypesTracker.registerUsedOpenedArchetypes(ty);
+      FunctionState.ParsedTypeCallback = [&OpenedArchetypesTracker](Type ty) {
+        OpenedArchetypesTracker.registerUsedOpenedArchetypes(
+          ty->getCanonicalType());
       };
 
       do {

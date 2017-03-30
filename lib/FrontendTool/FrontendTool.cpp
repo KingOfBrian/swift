@@ -21,7 +21,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/FrontendTool/FrontendTool.h"
+#include "ImportedModules.h"
 #include "ReferenceDependencies.h"
+#include "TBD.h"
 
 #include "swift/Subsystems.h"
 #include "swift/AST/ASTScope.h"
@@ -115,10 +117,11 @@ static bool emitMakeDependencies(DiagnosticEngine &diags,
     out << escape(targetName) << " :";
     // First include all other files in the module. Make-style dependencies
     // need to be conservative!
-    for (StringRef path : opts.InputFilenames)
+    for (auto const &path : reversePathSortedFilenames(opts.InputFilenames))
       out << ' ' << escape(path);
     // Then print dependencies we've picked up during compilation.
-    for (StringRef path : depTracker.getDependencies())
+    for (auto const &path :
+           reversePathSortedFilenames(depTracker.getDependencies()))
       out << ' ' << escape(path);
     out << '\n';
   });
@@ -390,7 +393,8 @@ static bool performCompile(std::unique_ptr<CompilerInstance> &Instance,
 
   if (Action == FrontendOptions::Parse ||
       Action == FrontendOptions::DumpParse ||
-      Action == FrontendOptions::DumpInterfaceHash)
+      Action == FrontendOptions::DumpInterfaceHash ||
+      Action == FrontendOptions::EmitImportedModules)
     Instance->performParseOnly();
   else
     Instance->performSema();
@@ -485,6 +489,9 @@ static bool performCompile(std::unique_ptr<CompilerInstance> &Instance,
     else
       SF->dump();
     return Context.hadError();
+  } else if (Action == FrontendOptions::EmitImportedModules) {
+    emitImportedModules(Context, Instance->getMainModule(), opts);
+    return Context.hadError();
   }
 
   // If we were asked to print Clang stats, do so.
@@ -515,6 +522,10 @@ static bool performCompile(std::unique_ptr<CompilerInstance> &Instance,
       return printAsObjC(opts.ObjCHeaderOutputPath, Instance->getMainModule(),
                          opts.ImplicitObjCHeaderPath, moduleIsPublic);
     return Context.hadError();
+  }
+
+  if (Action == FrontendOptions::EmitTBD) {
+    return writeTBD(Instance->getMainModule(), opts.getSingleOutputFilename());
   }
 
   assert(Action >= FrontendOptions::EmitSILGen &&
@@ -749,6 +760,14 @@ static bool performCompile(std::unique_ptr<CompilerInstance> &Instance,
     return HadError;
   }
 
+  if (opts.ValidateTBDAgainstIR) {
+    bool validationError =
+        PrimarySourceFile ? validateTBD(PrimarySourceFile, *IRModule)
+                          : validateTBD(Instance->getMainModule(), *IRModule);
+    if (validationError)
+      return true;
+  }
+
   std::unique_ptr<llvm::TargetMachine> TargetMachine =
     createTargetMachine(IRGenOpts, Context);
   version::Version EffectiveLanguageVersion =
@@ -979,7 +998,7 @@ int swift::performFrontend(ArrayRef<const char *> Args,
     performCompile(Instance, Invocation, Args, ReturnValue, observer);
 
   if (!HadError) {
-    NewMangling::printManglingStats();
+    Mangle::printManglingStats();
   }
 
   if (!HadError && !Invocation.getFrontendOptions().DumpAPIPath.empty()) {

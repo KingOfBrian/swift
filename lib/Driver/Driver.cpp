@@ -155,6 +155,17 @@ static void validateArgs(DiagnosticEngine &diags, const ArgList &Args) {
     diags.diagnose(SourceLoc(), diag::error_conflicting_options,
                    "-warnings-as-errors", "-suppress-warnings");
   }
+  
+  // Check for missing debug option when verifying debug info.
+  if (Args.hasArg(options::OPT_verify_debug_info)) {
+    bool hasDebugOption = true;
+    Arg *Arg = Args.getLastArg(swift::options::OPT_g_Group);
+    if (!Arg || Arg->getOption().matches(swift::options::OPT_gnone))
+      hasDebugOption = false;
+    if (!hasDebugOption)
+      diags.diagnose(SourceLoc(),
+                     diag::verify_debug_info_requires_debug_option);
+  }
 }
 
 /// Creates an appropriate ToolChain for a given driver and target triple.
@@ -1094,6 +1105,21 @@ void Driver::buildOutputInfo(const ToolChain &TC, const DerivedArgList &Args,
       OI.CompilerOutputType = types::TY_PCH;
       break;
 
+    case options::OPT_emit_imported_modules:
+      OI.CompilerOutputType = types::TY_ImportedModules;
+      // We want the imported modules from the module as a whole, not individual
+      // files, so let's do it in one invocation rather than having to collate
+      // later.
+      OI.CompilerMode = OutputInfo::Mode::SingleCompile;
+      break;
+
+    case options::OPT_emit_tbd:
+      OI.CompilerOutputType = types::TY_TBD;
+      // We want the symbols from the whole module, so let's do it in one
+      // invocation.
+      OI.CompilerMode = OutputInfo::Mode::SingleCompile;
+      break;
+
     case options::OPT_parse:
     case options::OPT_typecheck:
     case options::OPT_dump_parse:
@@ -1102,6 +1128,7 @@ void Driver::buildOutputInfo(const ToolChain &TC, const DerivedArgList &Args,
     case options::OPT_dump_type_refinement_contexts:
     case options::OPT_dump_scope_maps:
     case options::OPT_dump_interface_hash:
+    case options::OPT_verify_debug_info:
       OI.CompilerOutputType = types::TY_Nothing;
       break;
 
@@ -1386,6 +1413,8 @@ void Driver::buildActions(const ToolChain &TC,
       case types::TY_SwiftDeps:
       case types::TY_Remapping:
       case types::TY_PCH:
+      case types::TY_ImportedModules:
+      case types::TY_TBD:
         // We could in theory handle assembly or LLVM input, but let's not.
         // FIXME: What about LTO?
         Diags.diagnose(SourceLoc(), diag::error_unexpected_input_file,
@@ -1538,6 +1567,11 @@ void Driver::buildActions(const ToolChain &TC,
       auto *dSYMAction = new GenerateDSYMJobAction(LinkAction);
       dSYMAction->setOwnsInputs(false);
       Actions.push_back(dSYMAction);
+      if (Args.hasArg(options::OPT_verify_debug_info)) {
+        auto *verifyDebugInfoAction = new VerifyDebugInfoJobAction(dSYMAction);
+        verifyDebugInfoAction->setOwnsInputs(false);
+        Actions.push_back(verifyDebugInfoAction);
+      }
     }
   } else {
     // The merge module action needs to be first to force the right outputs
@@ -2045,7 +2079,9 @@ Job *Driver::buildJobsForAction(Compilation &C, const JobAction *JA,
       if (llvm::sys::fs::is_regular_file(OutputPath))
         llvm::sys::fs::remove(OutputPath);
     }
+  }
 
+  if (isa<CompileJobAction>(JA)) {
     // Choose the dependencies file output path.
     if (C.getArgs().hasArg(options::OPT_emit_dependencies)) {
       addAuxiliaryOutput(C, *Output, types::TY_Dependencies, OI, OutputMap);

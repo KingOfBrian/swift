@@ -19,6 +19,7 @@
 #include "ConstraintSystem.h"
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/ASTWalker.h"
+#include "swift/AST/ParameterList.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/SubstitutionMap.h"
 #include "swift/Basic/StringExtras.h"
@@ -1388,21 +1389,28 @@ namespace {
 
         ref = ConcreteDeclRef(ctx, ctor, substitutions);
       } else {
-        Type containerTy = ctor->getDeclContext()->getDeclaredTypeOfContext();
-        resultTy = openedFullType->replaceCovariantResultType(
-                     containerTy, ctor->getNumParameterLists());
+        // No substitutions.
+        resultTy = openedFullType;
         ref = ConcreteDeclRef(ctor);
       }
 
       // The constructor was opened with the allocating type, not the
       // initializer type. Map the former into the latter.
-      auto resultFnTy = resultTy->castTo<FunctionType>();
-      auto selfTy = resultFnTy->getInput()->getRValueInstanceType();
+      auto selfTy = resultTy->castTo<FunctionType>()->getInput()
+        ->getRValueInstanceType();
+
+      // Also replace the result type with the base type, so that calls
+      // to constructors defined in a superclass will know to cast the
+      // result to the derived type.
+      resultTy = resultTy->replaceCovariantResultType(
+        selfTy, ctor->getNumParameterLists());
+
       if (!selfTy->hasReferenceSemantics())
         selfTy = InOutType::get(selfTy);
-      
-      resultTy = FunctionType::get(selfTy, resultFnTy->getResult(),
-                                   resultFnTy->getExtInfo());
+
+      resultTy = FunctionType::get(selfTy,
+                                   resultTy->castTo<FunctionType>()->getResult(),
+                                   resultTy->castTo<FunctionType>()->getExtInfo());
 
       // Build the constructor reference.
       Expr *ctorRef = cs.cacheType(
@@ -1411,7 +1419,7 @@ namespace {
       // Wrap in covariant `Self` return if needed.
       if (selfTy->hasReferenceSemantics()) {
         auto covariantTy = resultTy
-          ->replaceCovariantResultType(base->getType()
+          ->replaceCovariantResultType(cs.getType(base)
                                            ->getLValueOrInOutObjectType(),
                                        ctor->getNumParameterLists());
         if (!covariantTy->isEqual(resultTy))
@@ -5176,7 +5184,7 @@ ClosureExpr *ExprRewriter::coerceClosureExprToVoid(ClosureExpr *closureExpr) {
 
     // For l-value types, reset to the object type. This might not be strictly
     // necessary any more, but it's probably still a good idea.
-    if (cs.getType(singleExpr)->getAs<LValueType>())
+    if (cs.getType(singleExpr)->is<LValueType>())
       cs.setType(singleExpr,
                  cs.getType(singleExpr)->getLValueOrInOutObjectType());
 
@@ -5979,13 +5987,18 @@ Expr *ExprRewriter::convertLiteral(Expr *literal,
     return cs.getType(E);
   };
 
+  auto setType = [&](Expr *E, Type Ty) {
+    cs.setType(E, Ty);
+  };
+
   // If coercing a literal to an unresolved type, we don't try to look up the
   // witness members, just do it.
   if (type->is<UnresolvedType>()) {
     // Instead of updating the literal expr in place, allocate a new node.  This
     // avoids issues where Builtin types end up on expr nodes and pollute
     // diagnostics.
-    literal = cast<LiteralExpr>(literal)->shallowClone(tc.Context, getType);
+    literal = cast<LiteralExpr>(literal)->shallowClone(tc.Context, setType,
+                                                       getType);
 
     // The literal expression has this type.
     cs.setType(literal, type);
@@ -6020,7 +6033,8 @@ Expr *ExprRewriter::convertLiteral(Expr *literal,
     // Instead of updating the literal expr in place, allocate a new node.  This
     // avoids issues where Builtin types end up on expr nodes and pollute
     // diagnostics.
-    literal = cast<LiteralExpr>(literal)->shallowClone(tc.Context, getType);
+    literal = cast<LiteralExpr>(literal)->shallowClone(tc.Context, setType,
+                                                       getType);
 
     // The literal expression has this type.
     cs.setType(literal, argType);
@@ -6123,13 +6137,18 @@ Expr *ExprRewriter::convertLiteralInPlace(Expr *literal,
     return cs.getType(E);
   };
 
+  auto setType = [&](Expr *E, Type Ty) {
+    cs.setType(E, Ty);
+  };
+
   // If coercing a literal to an unresolved type, we don't try to look up the
   // witness members, just do it.
   if (type->is<UnresolvedType>()) {
     // Instead of updating the literal expr in place, allocate a new node.  This
     // avoids issues where Builtin types end up on expr nodes and pollute
     // diagnostics.
-    literal = cast<LiteralExpr>(literal)->shallowClone(tc.Context, getType);
+    literal = cast<LiteralExpr>(literal)->shallowClone(tc.Context, setType,
+                                                       getType);
 
     // The literal expression has this type.
     cs.setType(literal, type);
@@ -7299,9 +7318,11 @@ Expr *TypeChecker::callWitness(Expr *base, DeclContext *dc,
                             /*implicit=*/true, getType);
   }
 
+  cs.cacheSubExprTypes(call);
+
   // Add the conversion from the argument to the function parameter type.
   cs.addConstraint(ConstraintKind::ArgumentTupleConversion,
-                   call->getArg()->getType(),
+                   cs.getType(call->getArg()),
                    openedType->castTo<FunctionType>()->getInput(),
                    cs.getConstraintLocator(call,
                                            ConstraintLocator::ApplyArgument));

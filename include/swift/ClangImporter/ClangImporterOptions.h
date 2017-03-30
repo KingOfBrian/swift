@@ -35,8 +35,12 @@ public:
   /// Equivalent to Clang's -mcpu=.
   std::string TargetCPU;
 
-  // The bridging header or PCH that will be imported.
+  /// The bridging header or PCH that will be imported.
   std::string BridgingHeader;
+
+  /// When automatically generating a precompiled header from the bridging
+  /// header, place it in this directory.
+  std::string PrecompiledHeaderOutputDir;
 
   /// \see Mode
   enum class Modes {
@@ -77,6 +81,9 @@ public:
   /// When set, don't validate module system headers. If a header is modified
   /// and this is not set, clang will rebuild the module.
   bool DisableModulesValidateSystemHeaders = false;
+
+  /// When set, don't look for or load adapter modules.
+  bool DisableAdapterModules = false;
 };
 
 } // end namespace swift

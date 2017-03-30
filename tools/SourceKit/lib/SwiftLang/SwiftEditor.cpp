@@ -20,7 +20,6 @@
 #include "SourceKit/Support/Tracing.h"
 #include "SourceKit/Support/UIdent.h"
 
-#include "swift/AST/AST.h"
 #include "swift/AST/ASTPrinter.h"
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/ASTWalker.h"
@@ -778,7 +777,7 @@ public:
 
   bool visitDeclReference(ValueDecl *D, CharSourceRange Range,
                           TypeDecl *CtorTyRef, ExtensionDecl *ExtTyRef, Type T,
-                          SemaReferenceKind Kind) override {
+                          ReferenceMetaData Data) override {
     if (isa<VarDecl>(D) && D->hasName() && D->getName().str() == "self")
       return true;
 
@@ -796,7 +795,7 @@ public:
                                bool IsOpenBracket) override {
     // We should treat both open and close brackets equally
     return visitDeclReference(D, Range, nullptr, nullptr, Type(),
-                              SemaReferenceKind::SubscriptRef);
+                      ReferenceMetaData(SemaReferenceKind::SubscriptRef, None));
   }
 
   void annotate(const Decl *D, bool IsRef, CharSourceRange Range) {
@@ -2127,6 +2126,17 @@ void SwiftLangSupport::editorFormatText(StringRef Name, unsigned Line,
 void SwiftLangSupport::editorExtractTextFromComment(StringRef Source,
                                                     EditorConsumer &Consumer) {
   Consumer.handleSourceText(extractPlainTextFromComment(Source));
+}
+
+void SwiftLangSupport::editorConvertMarkupToXML(StringRef Source,
+                                                EditorConsumer &Consumer) {
+  std::string Result;
+  llvm::raw_string_ostream OS(Result);
+  if (convertMarkupToXML(Source, OS)) {
+    Consumer.handleRequestError("Conversion failed.");
+    return;
+  }
+  Consumer.handleSourceText(Result);
 }
 
 //===----------------------------------------------------------------------===//

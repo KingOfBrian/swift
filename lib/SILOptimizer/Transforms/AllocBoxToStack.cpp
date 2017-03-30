@@ -13,13 +13,13 @@
 #define DEBUG_TYPE "allocbox-to-stack"
 #include "swift/SILOptimizer/PassManager/Passes.h"
 #include "swift/SIL/Dominance.h"
-#include "swift/SIL/Mangle.h"
 #include "swift/SILOptimizer/Utils/SpecializationMangler.h"
 #include "swift/SIL/SILArgument.h"
 #include "swift/SIL/SILBuilder.h"
 #include "swift/SIL/SILCloner.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
 #include "swift/SILOptimizer/Utils/Local.h"
+#include "swift/SILOptimizer/Utils/StackNesting.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
@@ -396,8 +396,7 @@ static bool canPromoteAllocBox(AllocBoxInst *ABI,
 
 /// rewriteAllocBoxAsAllocStack - Replace uses of the alloc_box with a
 /// new alloc_stack, but do not delete the alloc_box yet.
-static bool rewriteAllocBoxAsAllocStack(AllocBoxInst *ABI,
-                                   llvm::SmallVectorImpl<TermInst *> &Returns) {
+static bool rewriteAllocBoxAsAllocStack(AllocBoxInst *ABI) {
   DEBUG(llvm::dbgs() << "*** Promoting alloc_box to stack: " << *ABI);
 
   llvm::SmallVector<SILInstruction*, 4> FinalReleases;
@@ -406,8 +405,7 @@ static bool rewriteAllocBoxAsAllocStack(AllocBoxInst *ABI,
 
   // Promote this alloc_box to an alloc_stack. Insert the alloc_stack
   // at the beginning of the function.
-  auto &Entry = ABI->getFunction()->front();
-  SILBuilder BuildAlloc(&Entry, Entry.begin());
+  SILBuilder BuildAlloc(ABI);
   BuildAlloc.setCurrentDebugScope(ABI->getDebugScope());
   assert(ABI->getBoxType()->getLayout()->getFields().size() == 1
          && "rewriting multi-field box not implemented");
@@ -441,25 +439,18 @@ static bool rewriteAllocBoxAsAllocStack(AllocBoxInst *ABI,
     .getTypeLowering(ABI->getBoxType()->getFieldType(ABI->getModule(), 0));
   auto Loc = CleanupLocation::get(ABI->getLoc());
 
-  // For non-trivial types, insert destroys for each final release-like
-  // instruction we found that isn't an explicit dealloc_box.
-  if (!Lowering.isTrivial()) {
-    for (auto LastRelease : FinalReleases) {
-      if (isa<DeallocBoxInst>(LastRelease))
-        continue;
-
-      SILBuilderWithScope BuildDestroy(LastRelease);
-      BuildDestroy.emitDestroyAddrAndFold(Loc, PointerResult);
+  for (auto LastRelease : FinalReleases) {
+    SILBuilderWithScope Builder(LastRelease);
+    if (!isa<DeallocBoxInst>(LastRelease)&& !Lowering.isTrivial()) {
+      // For non-trivial types, insert destroys for each final release-like
+      // instruction we found that isn't an explicit dealloc_box.
+      Builder.emitDestroyAddrAndFold(Loc, PointerResult);
     }
+    Builder.createDeallocStack(Loc, ASI);
   }
 
-  for (auto Return : Returns) {
-    SILBuilderWithScope BuildDealloc(Return);
-    BuildDealloc.createDeallocStack(Loc, ASI);
-  }
-
-  // Remove any retain and release instructions.  Since all uses of result #1
-  // are gone, this only walks through uses of result #0 (the retain count
+  // Remove any retain and release instructions.  Since all uses of project_box
+  // are gone, this only walks through uses of the box itself (the retain count
   // pointer).
   while (!ABI->use_empty()) {
     auto *User = (*ABI->use_begin())->getUser();
@@ -519,18 +510,12 @@ PromotedParamCloner::PromotedParamCloner(SILFunction *Orig, IsFragile_t Fragile,
 
 static std::string getClonedName(SILFunction *F, IsFragile_t Fragile,
                                  ArgIndexList &PromotedArgIndices) {
-  Mangle::Mangler M;
   auto P = Demangle::SpecializationPass::AllocBoxToStack;
-  FunctionSignatureSpecializationMangler OldFSSM(P, M, Fragile, F);
-  NewMangling::FunctionSignatureSpecializationMangler NewFSSM(P, Fragile, F);
+  Mangle::FunctionSignatureSpecializationMangler Mangler(P, Fragile, F);
   for (unsigned i : PromotedArgIndices) {
-    OldFSSM.setArgumentBoxToStack(i);
-    NewFSSM.setArgumentBoxToStack(i);
+    Mangler.setArgumentBoxToStack(i);
   }
-  OldFSSM.mangle();
-  std::string Old = M.finalize();
-  std::string New = NewFSSM.mangle();
-  return NewMangling::selectMangling(Old, New);
+  return Mangler.mangle();
 }
 
 /// \brief Create the function corresponding to the clone of the
@@ -832,7 +817,6 @@ rewritePartialApplies(llvm::SmallVectorImpl<Operand *> &PromotedOperands,
 static unsigned
 rewritePromotedBoxes(llvm::SmallVectorImpl<AllocBoxInst *> &Promoted,
                      llvm::SmallVectorImpl<Operand *> &PromotedOperands,
-                     llvm::SmallVectorImpl<TermInst *> &Returns,
                      bool &CFGChanged) {
   // First we'll rewrite any partial applies that we can to remove the
   // box container pointer from the operands.
@@ -842,7 +826,7 @@ rewritePromotedBoxes(llvm::SmallVectorImpl<AllocBoxInst *> &Promoted,
   auto rend = Promoted.rend();
   for (auto I = Promoted.rbegin(); I != rend; ++I) {
     auto *ABI = *I;
-    if (rewriteAllocBoxAsAllocStack(ABI, Returns)) {
+    if (rewriteAllocBoxAsAllocStack(ABI)) {
       ++Count;
       ABI->eraseFromParent();
     }
@@ -856,13 +840,8 @@ class AllocBoxToStack : public SILFunctionTransform {
   void run() override {
     llvm::SmallVector<AllocBoxInst *, 8> Promotable;
     llvm::SmallVector<Operand *, 8> PromotedOperands;
-    llvm::SmallVector<TermInst *, 8> Returns;
 
     for (auto &BB : *getFunction()) {
-      auto *Term = BB.getTerminator();
-      if (Term->isFunctionExiting())
-        Returns.push_back(Term);
-
       for (auto &I : BB)
         if (auto *ABI = dyn_cast<AllocBoxInst>(&I))
           if (canPromoteAllocBox(ABI, PromotedOperands))
@@ -871,9 +850,14 @@ class AllocBoxToStack : public SILFunctionTransform {
 
     if (!Promotable.empty()) {
       bool CFGChanged = false;
-      auto Count = rewritePromotedBoxes(Promotable, PromotedOperands, Returns,
+      auto Count = rewritePromotedBoxes(Promotable, PromotedOperands,
                                         CFGChanged);
       NumStackPromoted += Count;
+      if (Count) {
+        StackNesting SN;
+        if (SN.correctStackNesting(getFunction()) == StackNesting::Changes::CFG)
+          CFGChanged = true;
+      }
       
       invalidateAnalysis(CFGChanged ?
                          SILAnalysis::InvalidationKind::FunctionBody :

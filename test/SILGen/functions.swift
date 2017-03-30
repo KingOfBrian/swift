@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -Xllvm -sil-full-demangle -parse-stdlib -parse-as-library -emit-silgen %s | %FileCheck %s
+// RUN: %target-swift-frontend -Xllvm -sil-full-demangle -parse-stdlib -parse-as-library -emit-silgen %s | %FileCheck %s
 
 import Swift // just for Optional
 
@@ -41,11 +41,11 @@ class SomeClass {
   // -- Constructors and methods are uncurried in 'self'
   // -- Instance methods use 'method' cc
 
-  // CHECK-LABEL: sil hidden @_T09functions9SomeClassC{{[_0-9a-zA-Z]*}}fc : $@convention(method) (Builtin.Int64, Builtin.Int64, @owned SomeClass) -> @owned SomeClass
-  // CHECK: bb0(%0 : $Builtin.Int64, %1 : $Builtin.Int64, %2 : $SomeClass):
-
   // CHECK-LABEL: sil hidden @_T09functions9SomeClassC{{[_0-9a-zA-Z]*}}fC : $@convention(method) (Builtin.Int64, Builtin.Int64, @thick SomeClass.Type) -> @owned SomeClass
   // CHECK: bb0(%0 : $Builtin.Int64, %1 : $Builtin.Int64, %2 : $@thick SomeClass.Type):
+
+  // CHECK-LABEL: sil hidden @_T09functions9SomeClassC{{[_0-9a-zA-Z]*}}fc : $@convention(method) (Builtin.Int64, Builtin.Int64, @owned SomeClass) -> @owned SomeClass
+  // CHECK: bb0(%0 : $Builtin.Int64, %1 : $Builtin.Int64, %2 : $SomeClass):
   init(x:Int, y:Int) {}
 
   // CHECK-LABEL: sil hidden @_T09functions9SomeClassC6method{{[_0-9a-zA-Z]*}}F : $@convention(method) (Builtin.Int64, @guaranteed SomeClass) -> () 
@@ -218,8 +218,7 @@ func calls(_ i:Int, j:Int, k:Int) {
   // CHECK: [[PMETHOD:%[0-9]+]] = witness_method $[[OPENED]], #SomeProtocol.method!1
   // CHECK: [[I:%[0-9]+]] = load [trivial] [[IADDR]]
   // CHECK: apply [[PMETHOD]]<[[OPENED]]>([[I]], [[PVALUE]])
-  // CHECK: destroy_addr [[PVALUE]]
-  // CHECK: deinit_existential_addr [[TEMP]]
+  // CHECK: destroy_addr [[TEMP]]
   // CHECK: dealloc_stack [[TEMP]]
   p.method(i)
 
@@ -247,24 +246,24 @@ func calls(_ i:Int, j:Int, k:Int) {
 
   // CHECK: [[G:%[0-9]+]] = load [copy] [[GADDR]]
   // CHECK: [[METHOD_GEN:%[0-9]+]] = class_method [[G]] : {{.*}}, #SomeGeneric.method!1
-  // CHECK: [[TMPI:%.*]] = alloc_stack $Builtin.Int64
   // CHECK: [[TMPR:%.*]] = alloc_stack $Builtin.Int64
+  // CHECK: [[TMPI:%.*]] = alloc_stack $Builtin.Int64
   // CHECK: apply [[METHOD_GEN]]<{{.*}}>([[TMPR]], [[TMPI]], [[G]])
   // CHECK: destroy_value [[G]]
   g.method(i)
 
   // CHECK: [[G:%[0-9]+]] = load [copy] [[GADDR]]
   // CHECK: [[METHOD_GEN:%[0-9]+]] = class_method [[G]] : {{.*}}, #SomeGeneric.generic!1
-  // CHECK: [[TMPJ:%.*]] = alloc_stack $Builtin.Int64
   // CHECK: [[TMPR:%.*]] = alloc_stack $Builtin.Int64
+  // CHECK: [[TMPJ:%.*]] = alloc_stack $Builtin.Int64
   // CHECK: apply [[METHOD_GEN]]<{{.*}}>([[TMPR]], [[TMPJ]], [[G]])
   // CHECK: destroy_value [[G]]
   g.generic(j)
 
   // CHECK: [[C:%[0-9]+]] = load [copy] [[CADDR]]
   // CHECK: [[METHOD_GEN:%[0-9]+]] = class_method [[C]] : {{.*}}, #SomeClass.generic!1
-  // CHECK: [[TMPK:%.*]] = alloc_stack $Builtin.Int64
   // CHECK: [[TMPR:%.*]] = alloc_stack $Builtin.Int64
+  // CHECK: [[TMPK:%.*]] = alloc_stack $Builtin.Int64
   // CHECK: apply [[METHOD_GEN]]<{{.*}}>([[TMPR]], [[TMPK]], [[C]])
   // CHECK: destroy_value [[C]]
   c.generic(k)

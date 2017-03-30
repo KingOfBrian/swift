@@ -15,9 +15,10 @@
 //===----------------------------------------------------------------------===//
 #include "TypeChecker.h"
 #include "GenericTypeResolver.h"
+#include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/GenericSignatureBuilder.h"
 #include "swift/AST/ProtocolConformance.h"
-#include "swift/AST/GenericEnvironment.h"
+#include "swift/AST/ParameterList.h"
 #include "swift/AST/Types.h"
 #include "swift/Basic/Defer.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -630,17 +631,16 @@ static void checkReferencedGenericParams(GenericContext *dc,
 
   auto requirements = sig->getRequirements();
   for (auto req : requirements) {
-    if (req.getKind() == RequirementKind::SameType) {
-      // Same type requirements may allow for generic
-      // inference, even if this generic parameter
-      // is not mentioned in the function signature.
-      // TODO: Make the test more precise.
-      auto left = req.getFirstType();
-      auto right = req.getSecondType();
-      // For now consider any references inside requirements
-      // as a possibility to infer the generic type.
-      left.visit(visitorFn);
-      right.visit(visitorFn);
+    switch (req.getKind()) {
+      case RequirementKind::SameType:
+      case RequirementKind::Superclass:
+        req.getSecondType().visit(visitorFn);
+        LLVM_FALLTHROUGH;
+
+      case RequirementKind::Conformance:
+      case RequirementKind::Layout:
+        req.getFirstType().visit(visitorFn);
+        break;
     }
   }
 

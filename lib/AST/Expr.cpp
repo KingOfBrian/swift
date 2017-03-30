@@ -16,10 +16,11 @@
 
 #include "swift/AST/Expr.h"
 #include "swift/Basic/Unicode.h"
+#include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/Decl.h" // FIXME: Bad dependency
+#include "swift/AST/ParameterList.h"
 #include "swift/AST/Stmt.h"
-#include "swift/AST/AST.h"
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/AvailabilitySpec.h"
 #include "swift/AST/PrettyStackTrace.h"
@@ -929,7 +930,8 @@ shallowCloneImpl(const ObjectLiteralExpr *E, ASTContext &Ctx,
 
 // Make an exact copy of this AST node.
 LiteralExpr *LiteralExpr::shallowClone(
-    ASTContext &Ctx, llvm::function_ref<Type(const Expr *)> getType) const {
+    ASTContext &Ctx, llvm::function_ref<void(Expr *, Type)> setType,
+                     llvm::function_ref<Type(const Expr *)> getType) const {
   LiteralExpr *Result = nullptr;
   switch (getKind()) {
   default: llvm_unreachable("Unknown literal type!");
@@ -949,7 +951,7 @@ LiteralExpr *LiteralExpr::shallowClone(
 #undef DISPATCH_CLONE
   }
 
-  Result->setType(getType(this));
+  setType(Result, getType(this));
   Result->setImplicit(isImplicit());
   return Result;
 }
@@ -1788,7 +1790,7 @@ RebindSelfInConstructorExpr::RebindSelfInConstructorExpr(Expr *SubExpr,
 
 OtherConstructorDeclRefExpr *
 RebindSelfInConstructorExpr::getCalledConstructor(bool &isChainToSuper) const {
-  // Dig out the OtherConstructorRefExpr. Note that this is the reverse
+  // Dig out the OtherConstructorDeclRefExpr. Note that this is the reverse
   // of what we do in pre-checking.
   Expr *candidate = getSubExpr();
   while (true) {

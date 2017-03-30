@@ -24,6 +24,7 @@
 #include "swift/AST/Identifier.h"
 #include "swift/AST/Initializer.h"
 #include "swift/AST/NameLookup.h"
+#include "swift/AST/ParameterList.h"
 #include "swift/AST/PrettyStackTrace.h"
 #include "swift/Basic/Range.h"
 #include "swift/Basic/STLExtras.h"
@@ -221,10 +222,13 @@ diagnoseMissingCases(ASTContext &Context, const SwitchStmt *SwitchS) {
   SmallString<32> Buffer;
   llvm::raw_svector_ostream OS(Buffer);
 
+  bool InEditor = Context.LangOpts.DiagnosticsEditorMode;
+
   auto DefaultDiag = [&]() {
     OS << tok::kw_default << ": " << Placeholder << "\n";
     Context.Diags.diagnose(StartLoc, Empty ? diag::empty_switch_stmt :
-      diag::non_exhaustive_switch, true).fixItInsert(EndLoc, Buffer.str());
+      diag::non_exhaustive_switch, InEditor, true).fixItInsert(EndLoc,
+                                                               Buffer.str());
   };
   // To find the subject enum decl for this switch statement.
   EnumDecl *SubjectED = nullptr;
@@ -261,57 +265,10 @@ diagnoseMissingCases(ASTContext &Context, const SwitchStmt *SwitchS) {
     return;
   }
 
-  // Sort the missing elements to a vector because set does not guarantee orders.
-  SmallVector<EnumElementDecl*, 4> SortedElements;
-  SortedElements.insert(SortedElements.begin(), UnhandledElements.begin(),
-                        UnhandledElements.end());
-  std::sort(SortedElements.begin(),SortedElements.end(),
-            [](EnumElementDecl *LHS, EnumElementDecl *RHS) {
-              return LHS->getNameStr().compare(RHS->getNameStr()) < 0;
-            });
-
-  auto printPayloads = [](EnumElementDecl *EE, llvm::raw_ostream &OS) {
-    // If the enum element has no payloads, return.
-    auto TL = EE->getArgumentTypeLoc();
-    if (TL.isNull())
-      return;
-    TypeRepr* TR = EE->getArgumentTypeLoc().getTypeRepr();
-    if (auto *TTR = dyn_cast<TupleTypeRepr>(TR)) {
-      SmallVector<Identifier, 4> NameBuffer;
-      ArrayRef<Identifier> Names;
-      if (TTR->hasElementNames()) {
-        // Get the name from the tuple repr, if exist.
-        Names = TTR->getElementNames();
-      } else {
-        // Create same amount of empty names to the elements.
-        NameBuffer.resize(TTR->getNumElements());
-        Names = llvm::makeArrayRef(NameBuffer);
-      }
-      OS << "(";
-      // Print each element in the pattern match.
-      for (unsigned I = 0, N = Names.size(); I < N; I ++) {
-        auto Id = Names[I];
-        if (Id.empty())
-          OS << "_";
-        else
-          OS << tok::kw_let << " " << Id.str();
-        if (I + 1 != N) {
-          OS << ", ";
-        }
-      }
-      OS << ")";
-    }
-  };
-
-  // Print each enum element name.
-  std::for_each(SortedElements.begin(), SortedElements.end(),
-    [&](EnumElementDecl *EE) {
-      OS << tok::kw_case << " ." << EE->getNameStr();
-      printPayloads(EE, OS);
-      OS <<": " << Placeholder << "\n";
-  });
+  printEnumElmentsAsCases(UnhandledElements, OS);
   Context.Diags.diagnose(StartLoc, Empty ? diag::empty_switch_stmt :
-    diag::non_exhaustive_switch, false).fixItInsert(EndLoc, Buffer.str());
+    diag::non_exhaustive_switch, InEditor, false).fixItInsert(EndLoc,
+                                                              Buffer.str());
 }
 
 static void setAutoClosureDiscriminators(DeclContext *DC, Stmt *S) {
@@ -1440,10 +1397,14 @@ static void checkDefaultArguments(TypeChecker &tc,
         ->changeResilienceExpansion(expansion);
 
     // Type-check the initializer, then flag that we did so.
-    if (!tc.typeCheckExpression(e, initContext,
-                                TypeLoc::withoutLoc(param->getType()),
-                                CTP_DefaultParameter))
+    bool hadError = tc.typeCheckExpression(e, initContext,
+                                           TypeLoc::withoutLoc(param->getType()),
+                                           CTP_DefaultParameter);
+    if (!hadError) {
       param->setDefaultValue(e);
+    } else {
+      param->setDefaultValue(nullptr);
+    }
 
     tc.checkInitializerErrorHandling(initContext, e);
 

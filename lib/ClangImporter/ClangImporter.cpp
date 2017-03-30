@@ -58,6 +58,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/CrashRecoveryContext.h"
+#include "llvm/Support/Memory.h"
 #include "llvm/Support/Path.h"
 #include <algorithm>
 #include <memory>
@@ -73,12 +74,10 @@ using clang::CompilerInvocation;
 
 namespace {
   class HeaderImportCallbacks : public clang::PPCallbacks {
-    ClangImporter &Importer;
     ClangImporter::Implementation &Impl;
   public:
-    HeaderImportCallbacks(ClangImporter &importer,
-                          ClangImporter::Implementation &impl)
-      : Importer(importer), Impl(impl) {}
+    HeaderImportCallbacks(ClangImporter::Implementation &impl)
+      : Impl(impl) {}
 
     void handleImport(const clang::Module *imported) {
       if (!imported)
@@ -96,29 +95,12 @@ namespace {
                                     StringRef RelativePath,
                                     const clang::Module *Imported) override {
       handleImport(Imported);
-      if (!Imported && File)
-        Importer.addDependency(File->getName());
     }
 
     void moduleImport(clang::SourceLocation ImportLoc,
                               clang::ModuleIdPath Path,
                               const clang::Module *Imported) override {
       handleImport(Imported);
-    }
-  };
-
-  class ASTReaderCallbacks : public clang::ASTReaderListener {
-    ClangImporter &Importer;
-  public:
-    explicit ASTReaderCallbacks(ClangImporter &importer) : Importer(importer) {}
-
-    bool needsInputFileVisitation() override { return true; }
-
-    bool visitInputFile(StringRef file, bool isSystem,
-                        bool isOverridden, bool isExplicitModule) override {
-      if (!isOverridden)
-        Importer.addDependency(file);
-      return true;
     }
   };
 
@@ -206,6 +188,43 @@ namespace {
       return MemoryBuffer_Malloc;
     }
   };
+
+  class ZeroFilledMemoryBuffer : public llvm::MemoryBuffer {
+    const std::string name;
+  public:
+    explicit ZeroFilledMemoryBuffer(size_t size, StringRef name)
+        : name(name.str()) {
+      assert(size > 0);
+      std::error_code error;
+      llvm::sys::MemoryBlock memory =
+          llvm::sys::Memory::allocateMappedMemory(size, nullptr,
+                                                  llvm::sys::Memory::MF_READ,
+                                                  error);
+      assert(!error && "failed to allocated read-only zero-filled memory");
+      init(static_cast<char *>(memory.base()),
+           static_cast<char *>(memory.base()) + memory.size() - 1,
+           /*null-terminated*/true);
+    }
+
+    ~ZeroFilledMemoryBuffer() {
+      llvm::sys::MemoryBlock memory{const_cast<char *>(getBufferStart()),
+        getBufferSize()};
+      std::error_code error = llvm::sys::Memory::releaseMappedMemory(memory);
+      assert(!error && "failed to deallocate read-only zero-filled memory");
+    }
+
+    ZeroFilledMemoryBuffer(const ZeroFilledMemoryBuffer &) = delete;
+    ZeroFilledMemoryBuffer(ZeroFilledMemoryBuffer &&) = delete;
+    void operator=(const ZeroFilledMemoryBuffer &) = delete;
+    void operator=(ZeroFilledMemoryBuffer &&) = delete;
+
+    StringRef getBufferIdentifier() const override {
+      return name;
+    }
+    BufferKind getBufferKind() const override {
+      return MemoryBuffer_MMap;
+    }
+  };
 } // end anonymous namespace
 
 namespace {
@@ -275,7 +294,50 @@ private:
     Impl.BridgeHeaderMacros.push_back(MacroNameTok.getIdentifierInfo());
   }
 };
+
+class ClangImporterDependencyCollector : public clang::DependencyCollector
+{
+  llvm::StringSet<> ExcludedPaths;
+public:
+  ClangImporterDependencyCollector() = default;
+
+  void excludePath(StringRef filename) {
+    ExcludedPaths.insert(filename);
+  }
+
+  bool isClangImporterSpecialName(StringRef Filename) {
+    using ImporterImpl = ClangImporter::Implementation;
+    return (Filename == ImporterImpl::moduleImportBufferName
+            || Filename == ImporterImpl::bridgingHeaderBufferName);
+  }
+
+  // Currently preserving older ClangImporter behaviour of ignoring system
+  // dependencies, but possibly revisit?
+  bool needSystemDependencies() override { return false; }
+
+  bool sawDependency(StringRef Filename, bool FromClangModule,
+                     bool IsSystem, bool IsClangModuleFile,
+                     bool IsMissing) override {
+    if (!clang::DependencyCollector::sawDependency(Filename, FromClangModule,
+                                                   IsSystem, IsClangModuleFile,
+                                                   IsMissing))
+      return false;
+    // Currently preserving older ClangImporter behaviour of ignoring .pcm
+    // file dependencies, but possibly revisit?
+    if (IsClangModuleFile
+        || isClangImporterSpecialName(Filename)
+        || ExcludedPaths.count(Filename))
+      return false;
+    return true;
+  }
+};
 } // end anonymous namespace
+
+std::shared_ptr<clang::DependencyCollector>
+ClangImporter::createDependencyCollector()
+{
+  return std::make_shared<ClangImporterDependencyCollector>();
+}
 
 void ClangImporter::Implementation::addBridgeHeaderTopLevelDecls(
     clang::Decl *D) {
@@ -670,6 +732,14 @@ ClangImporter::create(ASTContext &ctx,
   if (llvm::sys::path::extension(importerOpts.BridgingHeader).endswith(
         PCH_EXTENSION)) {
     importer->Impl.IsReadingBridgingPCH = true;
+    if (tracker) {
+      // Currently ignoring dependency on bridging .pch files because they are
+      // temporaries; if and when they are no longer temporaries, this condition
+      // should be removed.
+      auto &coll = static_cast<ClangImporterDependencyCollector &>(
+        *tracker->getClangCollector());
+      coll.excludePath(importerOpts.BridgingHeader);
+    }
   }
 
   // FIXME: These can't be controlled from the command line.
@@ -726,6 +796,9 @@ ClangImporter::create(ASTContext &ctx,
       llvm::make_unique<clang::ObjectFilePCHContainerReader>());
   importer->Impl.Instance.reset(new CompilerInstance(PCHContainerOperations));
   auto &instance = *importer->Impl.Instance;
+  if (tracker)
+    instance.addDependencyCollector(tracker->getClangCollector());
+
   instance.setDiagnostics(&*clangDiags);
   instance.setInvocation(importer->Impl.Invocation);
 
@@ -770,9 +843,6 @@ ClangImporter::create(ASTContext &ctx,
   clangPP.addPPCallbacks(std::move(ppTracker));
 
   instance.createModuleManager();
-  instance.getModuleManager()->addListener(
-         std::unique_ptr<clang::ASTReaderListener>(
-                 new ASTReaderCallbacks(*importer)));
 
   // Manually run the action, so that the TU stays open for additional parsing.
   instance.createSema(action->getTranslationUnitKind(), nullptr);
@@ -802,7 +872,7 @@ ClangImporter::create(ASTContext &ctx,
   }
 
   // FIXME: This is missing implicit includes.
-  auto *CB = new HeaderImportCallbacks(*importer, importer->Impl);
+  auto *CB = new HeaderImportCallbacks(importer->Impl);
   clangPP.addPPCallbacks(std::unique_ptr<clang::PPCallbacks>(CB));
 
   // Create the selectors we'll be looking for.
@@ -1192,11 +1262,22 @@ ModuleDecl *ClangImporter::loadModule(
                                               importLoc);
 
     // FIXME: The source location here is completely bogus. It can't be
-    // invalid, and it can't be the same thing twice in a row, so we just use
-    // a counter. Having real source locations would be far, far better.
+    // invalid, it can't be the same thing twice in a row, and it has to come
+    // from an actual buffer, so we make a fake buffer and just use a counter.
+    if (!Impl.DummyImportBuffer.isValid()) {
+      Impl.DummyImportBuffer = srcMgr.createFileID(
+          llvm::make_unique<ZeroFilledMemoryBuffer>(
+              256*1024, StringRef(Implementation::moduleImportBufferName)),
+          clang::SrcMgr::C_User,
+          /*LoadedID*/0, /*LoadedOffset*/0,
+          srcMgr.getLocForStartOfFile(srcMgr.getMainFileID()));
+    }
     clang::SourceLocation clangImportLoc
-      = srcMgr.getLocForStartOfFile(srcMgr.getMainFileID())
+      = srcMgr.getLocForStartOfFile(Impl.DummyImportBuffer)
               .getLocWithOffset(Impl.ImportCounter++);
+    assert(srcMgr.isInFileID(clangImportLoc, Impl.DummyImportBuffer) &&
+           "confused Clang's source manager with our fake locations");
+
     clang::ModuleLoadResult result =
         Impl.Instance->loadModule(clangImportLoc, path, visibility,
                                   /*IsInclusionDirective=*/false);
@@ -1376,6 +1457,7 @@ ClangImporter::Implementation::Implementation(ASTContext &ctx,
       InferImportAsMember(opts.InferImportAsMember),
       DisableSwiftBridgeAttr(opts.DisableSwiftBridgeAttr),
       BridgingHeaderExplicitlyRequested(!opts.BridgingHeader.empty()),
+      DisableAdapterModules(opts.DisableAdapterModules),
       IsReadingBridgingPCH(false),
       CurrentVersion(nameVersionFromOptions(ctx.LangOpts)),
       BridgingHeaderLookupTable(new SwiftLookupTable(nullptr)),
@@ -2472,6 +2554,9 @@ ModuleDecl *ClangModuleUnit::getAdapterModule() const {
   if (!clangModule)
     return nullptr;
 
+  if (owner.DisableAdapterModules)
+    return nullptr;
+
   if (!isTopLevel()) {
     // FIXME: Is this correct for submodules?
     auto topLevel = clangModule->getTopLevelModule();
@@ -2505,8 +2590,7 @@ void ClangModuleUnit::getImportedModules(
     SmallVectorImpl<ModuleDecl::ImportedModule> &imports,
     ModuleDecl::ImportFilter filter) const {
   if (filter != ModuleDecl::ImportFilter::Public)
-    imports.push_back({ModuleDecl::AccessPathTy(),
-                       getASTContext().getStdlibModule()});
+    imports.push_back({ModuleDecl::AccessPathTy(), owner.getStdlibModule()});
 
   if (!clangModule) {
     // This is the special "imported headers" module.
@@ -2750,46 +2834,38 @@ void ClangImporter::Implementation::lookupValue(
       if (auto clangDecl = entry.dyn_cast<clang::NamedDecl *>()) {
         const clang::NamedDecl *recentClangDecl =
             clangDecl->getMostRecentDecl();
-        auto tryImport = [&](ImportNameVersion nameVersion) -> bool {
+
+        forEachImportNameVersionFromCurrent(CurrentVersion,
+                                            [&](ImportNameVersion nameVersion) {
+          if (nameVersion == CurrentVersion)
+            return;
+          if (anyMatching)
+            return;
+
           // Check to see if the name and context match what we expect.
           ImportedName newName = importFullName(recentClangDecl, nameVersion);
           if (!newName.getDeclName().matchesRef(name))
-            return false;
+            return;
 
           const clang::DeclContext *clangDC =
               newName.getEffectiveContext().getAsDeclContext();
           if (!clangDC || !clangDC->isFileContext())
-            return false;
+            return;
 
           // Then try to import the decl under the alternate name.
           auto alternateNamedDecl =
               cast_or_null<ValueDecl>(importDeclReal(recentClangDecl,
                                                      nameVersion));
           if (!alternateNamedDecl)
-            return false;
+            return;
           assert(alternateNamedDecl->getFullName().matchesRef(name) &&
                  "importFullName behaved differently from importDecl");
           if (alternateNamedDecl->getDeclContext()->isModuleScopeContext()) {
             consumer.foundDecl(alternateNamedDecl,
                                DeclVisibilityKind::VisibleAtTopLevel);
-            return true;
+            anyMatching = true;
           }
-          return false;
-        };
-
-        // Try importing previous versions of the decl first...
-        ImportNameVersion nameVersion = CurrentVersion;
-        while (!anyMatching && nameVersion != ImportNameVersion::Raw) {
-          --nameVersion;
-          anyMatching = tryImport(nameVersion);
-        }
-        // ...then move on to newer versions if none of the old versions
-        // matched.
-        nameVersion = CurrentVersion;
-        while (!anyMatching && nameVersion != ImportNameVersion::LAST_VERSION) {
-          ++nameVersion;
-          anyMatching = tryImport(nameVersion);
-        }
+        });
       }
     }
   }

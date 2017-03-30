@@ -16,6 +16,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ConstraintSystem.h"
+#include "swift/AST/ParameterList.h"
 #include "swift/Basic/StringExtras.h"
 #include "swift/ClangImporter/ClangModule.h"
 #include "llvm/Support/Compiler.h"
@@ -744,10 +745,8 @@ matchCallArguments(ConstraintSystem &cs, ConstraintKind kind,
       if (!haveOneNonUserConversion) {
         subflags |= ConstraintSystem::TMF_ApplyingOperatorParameter;
       }
-      
-      switch (cs.matchTypes(argTy,paramTy,
-                            subKind, subflags,
-                            loc)) {
+
+      switch (cs.matchTypes(argTy, paramTy, subKind, subflags, loc)) {
       case ConstraintSystem::SolutionKind::Error:
         return ConstraintSystem::SolutionKind::Error;
 

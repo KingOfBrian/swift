@@ -17,6 +17,7 @@
 #include "Cleanup.h"
 #include "SILGenProfiling.h"
 #include "swift/AST/ASTContext.h"
+#include "swift/AST/AnyFunctionRef.h"
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/SIL/SILDebugScope.h"
 #include "swift/SIL/SILFunction.h"
@@ -172,9 +173,8 @@ public:
   /// Emit a vtable thunk for a derived method if its natural abstraction level
   /// diverges from the overridden base method. If no thunking is needed,
   /// returns a static reference to the derived method.
-  SILFunction *emitVTableMethod(SILDeclRef derived,
-                                SILDeclRef base,
-                                SILLinkage &implLinkage);
+  SILVTable::Entry emitVTableMethod(SILDeclRef derived,
+                                    SILDeclRef base);
 
   /// True if a function has been emitted for a given SILDeclRef.
   bool hasFunction(SILDeclRef constant);
@@ -283,8 +283,9 @@ public:
   /// Emits a thunk from a Swift function to the native Swift convention.
   void emitNativeToForeignThunk(SILDeclRef thunk);
 
-  template<typename T>
-  void preEmitFunction(SILDeclRef constant, T *astNode,
+  void preEmitFunction(SILDeclRef constant,
+                       llvm::PointerUnion<ValueDecl *,
+                                          Expr *> astNode,
                        SILFunction *F,
                        SILLocation L);
   void postEmitFunction(SILDeclRef constant, SILFunction *F);

@@ -171,6 +171,7 @@ def main():
         # build_dir.
         paths = args.paths
         if not paths:
+            parser.print_usage()
             error_exit("error: too few arguments")
 
         if args.build != 'skip':
@@ -243,6 +244,7 @@ def main():
 
     # Do execute test
     shell.call(test_cmd)
+
 
 if __name__ == "__main__":
     main()

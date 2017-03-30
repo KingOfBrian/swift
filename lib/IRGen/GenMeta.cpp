@@ -18,7 +18,6 @@
 #include "swift/AST/CanTypeVisitor.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/IRGenOptions.h"
-#include "swift/AST/Mangle.h"
 #include "swift/AST/SubstitutionMap.h"
 #include "swift/AST/Types.h"
 #include "swift/SIL/FormalLinkage.h"
@@ -427,17 +426,6 @@ bool irgen::hasKnownSwiftMetadata(IRGenModule &IGM, ClassDecl *theClass) {
   // is enough to conclusively force us into a slower path.
   // Eventually we might have an attribute here or something based on
   // the deployment target.
-  return theClass->hasKnownSwiftImplementation();
-}
-
-/// Is the given method known to be callable by vtable lookup?
-bool irgen::hasKnownVTableEntry(IRGenModule &IGM,
-                                AbstractFunctionDecl *theMethod) {
-  auto theClass = theMethod->getDeclContext()->getAsClassOrClassExtensionContext();
-  // Extension methods don't get vtable entries.
-  if (!theClass) {
-    return false;
-  }
   return theClass->hasKnownSwiftImplementation();
 }
 
@@ -2789,18 +2777,6 @@ irgen::emitFieldTypeAccessor(IRGenModule &IGM,
   // use it to provide metadata for generic parameters in field types.
   IGF.bindLocalTypeDataFromTypeMetadata(formalType, IsExact, metadata);
   
-  // Bind archetype access paths if the type is generic.
-  if (type->isGenericContext()) {
-    auto declCtxt = type;
-    if (auto generics = declCtxt->getGenericSignatureOfContext()) {
-      auto getInContext = [&](CanType type) -> CanType {
-        return declCtxt->mapTypeIntoContext(type)
-            ->getCanonicalType();
-      };
-      bindArchetypeAccessPaths(IGF, generics, getInContext);
-    }
-  }
-
   // Allocate storage for the field vector.
   unsigned allocSize = fieldTypes.size() * IGM.getPointerSize().getValue();
   auto allocSizeVal = llvm::ConstantInt::get(IGM.IntPtrTy, allocSize);
@@ -3525,6 +3501,8 @@ namespace {
         B.addBitCast(IGM.getDeletedMethodErrorFn(), IGM.FunctionPtrTy);
       }
     }
+
+    void addMethodOverride(SILDeclRef baseRef, SILDeclRef declRef) {}
 
     void addGenericArgument(CanType argTy, ClassDecl *forClass) {
       B.addNullPointer(IGM.TypeMetadataPtrTy);
@@ -4626,8 +4604,8 @@ llvm::Value *irgen::emitVirtualMethodValue(IRGenFunction &IGF,
   AbstractFunctionDecl *methodDecl
     = cast<AbstractFunctionDecl>(method.getDecl());
 
-  // Find the function that's actually got an entry in the metadata.
-  SILDeclRef overridden = method.getBaseOverriddenVTableEntry();
+  // Find the vtable entry for this method.
+  SILDeclRef overridden = IGF.IGM.getSILTypes().getOverriddenVTableEntry(method);
 
   // Find the metadata.
   llvm::Value *metadata;

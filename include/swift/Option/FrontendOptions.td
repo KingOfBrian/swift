@@ -267,6 +267,10 @@ def disable_availability_checking : Flag<["-"],
   "disable-availability-checking">,
   HelpText<"Disable checking for potentially unavailable APIs">;
 
+def disable_tsan_inout_instrumentation : Flag<["-"],
+  "disable-tsan-inout-instrumentation">,
+  HelpText<"Disable treatment of inout parameters as Thread Sanitizer accesses">;
+
 def enable_infer_import_as_member :
   Flag<["-"], "enable-infer-import-as-member">,
   HelpText<"Infer when a global could be imported as a member">;
@@ -374,5 +378,8 @@ def group_info_path : Separate<["-"], "group-info-path">,
 
 def diagnostics_editor_mode : Flag<["-"], "diagnostics-editor-mode">,
 HelpText<"Diagnostics will be used in editor">;
+
+def validate_tbd_against_ir: Flag<["-"], "validate-tbd-against-ir">,
+    HelpText<"Compare the symbols in the IR against the TBD file that would be generated.">;
 
 } // end let Flags = [FrontendOption, NoDriverOption, HelpHidden]

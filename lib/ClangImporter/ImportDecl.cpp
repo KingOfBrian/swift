@@ -2034,7 +2034,7 @@ namespace {
             /*Deprecated*/clang::VersionTuple(), SourceRange(),
             /*Obsoleted*/clang::VersionTuple(), SourceRange(),
             PlatformAgnosticAvailabilityKind::SwiftVersionSpecific,
-            /*Implicit*/true);
+            /*Implicit*/false);
       }
 
       decl->getAttrs().add(attr);
@@ -3887,6 +3887,9 @@ namespace {
 
     template <typename T, typename U>
     T *resolveSwiftDeclImpl(const U *decl, Identifier name, ModuleDecl *adapter) {
+      const auto &languageVersion =
+          Impl.SwiftContext.LangOpts.EffectiveLanguageVersion;
+
       SmallVector<ValueDecl *, 4> results;
       adapter->lookupValue({}, name, NLKind::QualifiedLookup, results);
       T *found = nullptr;
@@ -3895,8 +3898,9 @@ namespace {
           if (auto typeResolver = Impl.getTypeResolver())
             typeResolver->resolveDeclSignature(singleResult);
 
-          // Skip Swift 2 variants.
-          if (singleResult->getAttrs().isUnavailableInSwiftVersion())
+          // Skip versioned variants.
+          const DeclAttributes &attrs = singleResult->getAttrs();
+          if (attrs.isUnavailableInSwiftVersion(languageVersion))
             continue;
 
           if (found)
@@ -3992,14 +3996,16 @@ namespace {
         return nativeDecl;
 
       // Create the protocol declaration and record it.
-      auto result = Impl.createDeclWithClangNode<ProtocolDecl>(decl,
-                                   Accessibility::Public,
-                                   dc,
-                                   Impl.importSourceLoc(decl->getLocStart()),
-                                   Impl.importSourceLoc(decl->getLocation()),
-                                   name,
-                                   None);
+      auto result = Impl.createDeclWithClangNode<ProtocolDecl>(
+          decl, Accessibility::Public, dc,
+          Impl.importSourceLoc(decl->getLocStart()),
+          Impl.importSourceLoc(decl->getLocation()), name, None,
+          /*TrailingWhere=*/nullptr);
       result->computeType();
+
+      // FIXME: Kind of awkward that we have to do this here
+      result->getGenericParams()->getParams()[0]->setDepth(0);
+
       addObjCAttribute(result, Impl.importIdentifier(decl->getIdentifier()));
 
       if (declaredNative)
@@ -4403,8 +4409,13 @@ namespace {
                                       OptionalAttr(/*implicit*/false));
       // FIXME: Handle IBOutletCollection.
 
-      if (overridden)
+      if (overridden) {
         result->setOverriddenDecl(overridden);
+        getter->setOverriddenDecl(overridden->getGetter());
+        if (auto parentSetter = overridden->getSetter())
+          if (setter)
+            setter->setOverriddenDecl(parentSetter);
+      }
 
       // If this is a Swift 2 stub, mark it as such.
       if (correctSwiftName)
@@ -6248,9 +6259,11 @@ void SwiftDeclConverter::importMirroredProtocolMembers(
       if (classImplementsProtocol(superInterface, clangProto, true))
         continue;
 
+    const auto &languageVersion =
+        Impl.SwiftContext.LangOpts.EffectiveLanguageVersion;
     for (auto member : proto->getMembers()) {
       // Skip Swift 2 stubs; there's no reason to mirror them.
-      if (member->getAttrs().isUnavailableInSwiftVersion())
+      if (member->getAttrs().isUnavailableInSwiftVersion(languageVersion))
         continue;
 
       if (auto prop = dyn_cast<VarDecl>(member)) {
@@ -6341,13 +6354,16 @@ void SwiftDeclConverter::importInheritedConstructors(
 
   auto inheritConstructors = [&](DeclRange members,
                                  Optional<CtorInitializerKind> kind) {
+    const auto &languageVersion =
+        Impl.SwiftContext.LangOpts.EffectiveLanguageVersion;
+
     for (auto member : members) {
       auto ctor = dyn_cast<ConstructorDecl>(member);
       if (!ctor)
         continue;
 
       // Don't inherit Swift 2 stubs.
-      if (ctor->getAttrs().isUnavailableInSwiftVersion())
+      if (ctor->getAttrs().isUnavailableInSwiftVersion(languageVersion))
         continue;
 
       // Don't inherit (non-convenience) factory initializers.
@@ -7493,21 +7509,31 @@ ClangImporter::Implementation::loadAllMembers(Decl *D, uint64_t extra) {
       // Only continue members in the same submodule as this extension.
       if (decl->getImportedOwningModule() != submodule) continue;
 
-      // Import the member.
-      auto member = importDecl(decl, CurrentVersion);
-      if (!member) continue;
+      SmallPtrSet<DeclName, 8> seenNames;
+      forEachImportNameVersionFromCurrent(CurrentVersion,
+                                          [&](ImportNameVersion nameVersion) {
+        // Check to see if the name is different.
+        ImportedName newName = importFullName(decl, nameVersion);
+        if (!seenNames.insert(newName).second)
+          return;
 
-      // Add the member.
-      ext->addMember(member);
+        // Quickly check the context and bail out if it obviously doesn't
+        // belong here.
+        if (auto *importDC = newName.getEffectiveContext().getAsDeclContext())
+          if (importDC->isTranslationUnit())
+            return;
 
-      for (auto alternate : getAlternateDecls(member)) {
-        ext->addMember(alternate);
-      }
-
-      // Import the Swift 2 stub declaration.
-      if (auto swift2Member = importDecl(decl, ImportNameVersion::Swift2))
-        if (swift2Member->getDeclContext() == ext)
-          ext->addMember(swift2Member);
+        // Then try to import the decl under the specified name.
+        auto *member = importDecl(decl, nameVersion);
+        if (!member || member->getDeclContext() != ext)
+          return;
+        ext->addMember(member);
+        
+        for (auto alternate : getAlternateDecls(member)) {
+          if (alternate->getDeclContext() == ext)
+            ext->addMember(alternate);
+        }
+      });
     }
 
     return;
