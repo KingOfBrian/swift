@@ -43,10 +43,14 @@ swift::getMethodDispatch(AbstractFunctionDecl *method) {
   // If this declaration is in a class but not marked final, then it is
   // always dynamically dispatched.
   auto dc = method->getDeclContext();
+  auto classDecl = dc->getAsClassOrClassExtensionContext();
 
   // Class and class extension methods are always dynamically dispatched
-  if (dc->getAsClassOrClassExtensionContext()) {
-    return MethodDispatch::Class;
+  if (classDecl) {
+    if (classDecl->getForeignClassKind() == ClassDecl::ForeignKind::CFType)
+      return MethodDispatch::Static;
+    else
+      return MethodDispatch::Class;
   }
 
   // Otherwise, it can be referenced statically.
